@@ -1,0 +1,27 @@
+# ── 编译产物（code/ 下 make 生成，不提交）──
+obj/
+bin/
+*.o
+*.d
+*.img
+*.tar.gz
+
+# ── make grade 的临时输出 ──
+.gdb.in
+.qemu.out
+
+# ── 代码索引工具 ──
+cscope*
+tags
+
+# ── 本地辅助文件（课程模板、操作笔记等，不属于交付物）──
+_local/
+
+# ── 编辑器 / 系统杂项 ──
+.vscode/
+.idea/
+*~
+.DS_Store
+Thumbs.db
+
+# 注意：report/images/ 里的实验截图必须提交，不要写进这里！
