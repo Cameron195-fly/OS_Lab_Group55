@@ -56,11 +56,24 @@ bootstacktop:
     .global boot_page_table_sv39
 # 分配 4KiB 内存给预设的三级页表
 boot_page_table_sv39:
-    # 0xffffffff_c0000000 map to 0x80000000 (1G)
-    # 前 511 个页表项均设置为 0 ，因此 V=0 ，意味着是空的(unmapped)
-    .zero 8 * 511
-    # 设置最后一个页表项，PPN=0x80000，标志位 VRWXAD 均为 1
-    .quad (0x80000 << 10) | 0xcf # VRWXAD
+    # [511] 0xffffffff_c0000000 -> 0x80000000 (1G)  内核运行用的高地址映射
+    # [2]   0x00000000_80000000 -> 0x80000000 (1G)  过渡期用的低地址恒等映射
+    #
+    # 为什么需要 [2]：csrw satp 之后 MMU 立刻开始翻译"当前 PC"，而此刻 PC 还是
+    # 物理地址 0x80200038（sfence.vma 那一条），只映射高地址就会 exec_page_fault。
+    # QEMU 4.1.1 里写 satp 不打断当前 translation block，靠"一条 TB 直接跑到
+    # jr t0"侥幸能过；QEMU >= 5.x 修正了 TB 刷新，就必须让 0x80xxxxxx 这段在
+    # 过渡期也可取指。该映射对 QEMU 4.1.1 同样安全。
+    #
+    # 页表项标志位（RISC-V Sv39 PTE）：
+    #   bit0 V, bit1 R, bit2 W, bit3 X, bit4 U, bit5 G, bit6 A, bit7 D
+    #   0xcf = 0b1100_1111 = V|R|W|X|A|D —— 可读写可执行、A/D 已置位、U=0、G=0。
+    #   U 必须为 0：S 模式不允许从 U=1 的页面取指（新版 QEMU 的
+    #   access_type == MMU_INST_FETCH 分支会直接 TRANSLATE_FAIL）。
+    .zero 8 * 2                          # [0], [1] : unmapped
+    .quad (0x80000 << 10) | 0xcf         # [2]   : 低 1GiB 恒等映射（过渡用）
+    .zero 8 * (511 - 3)                  # [3] .. [510] : unmapped
+    .quad (0x80000 << 10) | 0xcf         # [511] : 0xffffffff_c0000000 -> 0x80000000
 
     .global boot_hartid
 boot_hartid:
