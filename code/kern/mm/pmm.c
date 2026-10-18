@@ -62,6 +62,12 @@ size_t nr_free_pages(void) {
 }
 
 //lab2 function1 YOUR CODE
+/* page_init - 物理内存探测 + Page 描述符布局 + 把空闲页交给 pmm_manager
+ *
+ * TODO: 这是"最小桩"，只为让工程能编译；真正的实现在后面两个 commit 里补全。
+ */
+static void page_init(void) {
+}
 
 /* pmm_init - initialize the physical memory management */
 void pmm_init(void) {

@@ -4,6 +4,41 @@
 #include <stdio.h>
 
 //lab2 function2-2 YOUR CODE
+/* ---------------------------------------------------------------------------
+ * Best-Fit 物理内存管理器（最小桩）
+ *
+ * 说明：本文件的两个测试函数 basic_check()/best_fit_check() 直接引用
+ * free_list / nr_free，且 free_list 被当作"结构体"整体赋值，因此这里必须先把
+ * 内部状态和 6 个接口定义出来，否则整个工程编译不过。
+ * 真正的实现（最佳适应选块 + 切分 + 双侧合并）在后续 commit 里补全。
+ * ------------------------------------------------------------------------- */
+
+static free_area_t free_area;
+
+#define free_list (free_area.free_list)
+#define nr_free (free_area.nr_free)
+
+static void
+best_fit_init(void) {
+}
+
+static void
+best_fit_init_memmap(struct Page *base, size_t n) {
+}
+
+static struct Page *
+best_fit_alloc_pages(size_t n) {
+    return NULL;
+}
+
+static void
+best_fit_free_pages(struct Page *base, size_t n) {
+}
+
+static size_t
+best_fit_nr_free_pages(void) {
+    return 0;
+}
 
 // Framework tests: students must not modify basic_check or best_fit_check.
 static void
@@ -136,3 +171,15 @@ best_fit_check(void) {
     cprintf("grading: %d / %d points\n", score, sumscore);
     #endif
 }
+
+// lab2 function2-2：注册 Best-Fit 管理器
+// 放在文件末尾，此时 basic_check/best_fit_check 已经定义过，不需要前置声明
+const struct pmm_manager best_fit_pmm_manager = {
+    .name = "best_fit_pmm_manager",
+    .init = best_fit_init,
+    .init_memmap = best_fit_init_memmap,
+    .alloc_pages = best_fit_alloc_pages,
+    .free_pages = best_fit_free_pages,
+    .nr_free_pages = best_fit_nr_free_pages,
+    .check = best_fit_check,
+};
