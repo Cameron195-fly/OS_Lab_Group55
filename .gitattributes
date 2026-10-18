@@ -1,0 +1,10 @@
+# 统一使用 LF 行尾：本工程在 WSL 里编译，Makefile/Makefile 片段一旦带 CRLF 会导致 make 直接失败。
+# Windows 上的编辑器（VS Code 默认）也遵守这里。
+* text=auto eol=lf
+
+# 二进制文件别做行尾转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.img binary
+*.gif binary
