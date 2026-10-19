@@ -5,12 +5,17 @@
 
 //lab2 function2-2 YOUR CODE
 /* ---------------------------------------------------------------------------
- * Best-Fit 物理内存管理器（最小桩）
+ * Best-Fit 物理内存管理器。
  *
- * 说明：本文件的两个测试函数 basic_check()/best_fit_check() 直接引用
- * free_list / nr_free，且 free_list 被当作"结构体"整体赋值，因此这里必须先把
- * 内部状态和 6 个接口定义出来，否则整个工程编译不过。
- * 真正的实现（最佳适应选块 + 切分 + 双侧合并）在后续 commit 里补全。
+ * 内部状态完全沿用 default_pmm.c（First-Fit）的约定，因为本文件的两个测试
+ * 函数直接依赖这些约定：
+ *   - free_list：空闲块链表，按物理地址升序
+ *   - nr_free  ：空闲页总数
+ *   - 只有空闲块的首页是"块头"：带 PG_property，property = 本块页数
+ *   - 释放时必须与左右相邻的空闲块合并
+ *
+ * 与 First-Fit 唯一的差别是"选块策略"：从所有装得下的块里挑**长度最小**的，
+ * 而不是第一个装得下的。
  * ------------------------------------------------------------------------- */
 
 static free_area_t free_area;
@@ -20,24 +25,130 @@ static free_area_t free_area;
 
 static void
 best_fit_init(void) {
+    list_init(&free_list);
+    nr_free = 0;
 }
 
 static void
 best_fit_init_memmap(struct Page *base, size_t n) {
+    assert(n > 0);
+    struct Page *p = base;
+    for (; p != base + n; p ++) {
+        assert(PageReserved(p));
+        p->flags = p->property = 0;
+        set_page_ref(p, 0);
+    }
+    base->property = n;
+    SetPageProperty(base);
+    nr_free += n;
+    // 按物理地址升序插入，后面合并只需看相邻节点
+    if (list_empty(&free_list)) {
+        list_add(&free_list, &(base->page_link));
+    } else {
+        list_entry_t* le = &free_list;
+        while ((le = list_next(le)) != &free_list) {
+            struct Page* page = le2page(le, page_link);
+            if (base < page) {
+                list_add_before(le, &(base->page_link));
+                break;
+            } else if (list_next(le) == &free_list) {
+                list_add(le, &(base->page_link));
+            }
+        }
+    }
 }
 
 static struct Page *
 best_fit_alloc_pages(size_t n) {
-    return NULL;
+    assert(n > 0);
+    if (n > nr_free) {
+        return NULL;
+    }
+    // 扫完整条链表，记住能装下 n 页的**最小**块
+    struct Page *page = NULL;
+    list_entry_t *le = &free_list;
+    while ((le = list_next(le)) != &free_list) {
+        struct Page *p = le2page(le, page_link);
+        if (p->property >= n) {
+            if (page == NULL || p->property < page->property) {
+                page = p;
+                if (page->property == n) {
+                    break;   // 正好装下，不可能更优
+                }
+            }
+        }
+    }
+    if (page != NULL) {
+        list_entry_t* prev = list_prev(&(page->page_link));
+        list_del(&(page->page_link));
+        if (page->property > n) {
+            // 剩下的尾巴做成新块，插回原位置，链表仍然有序
+            struct Page *p = page + n;
+            p->property = page->property - n;
+            SetPageProperty(p);
+            list_add(prev, &(p->page_link));
+        }
+        nr_free -= n;
+        ClearPageProperty(page);
+    }
+    return page;
 }
 
 static void
 best_fit_free_pages(struct Page *base, size_t n) {
+    assert(n > 0);
+    struct Page *p = base;
+    for (; p != base + n; p ++) {
+        assert(!PageReserved(p) && !PageProperty(p));
+        p->flags = 0;
+        set_page_ref(p, 0);
+    }
+    base->property = n;
+    SetPageProperty(base);
+    nr_free += n;
+
+    if (list_empty(&free_list)) {
+        list_add(&free_list, &(base->page_link));
+    } else {
+        list_entry_t* le = &free_list;
+        while ((le = list_next(le)) != &free_list) {
+            struct Page* page = le2page(le, page_link);
+            if (base < page) {
+                list_add_before(le, &(base->page_link));
+                break;
+            } else if (list_next(le) == &free_list) {
+                list_add(le, &(base->page_link));
+            }
+        }
+    }
+
+    // 先前向合并
+    list_entry_t* le = list_prev(&(base->page_link));
+    if (le != &free_list) {
+        p = le2page(le, page_link);
+        if (p + p->property == base) {
+            p->property += base->property;
+            ClearPageProperty(base);
+            list_del(&(base->page_link));
+            base = p;
+        }
+    }
+
+    // 再后向合并
+    le = list_next(&(base->page_link));
+    if (le != &free_list) {
+        p = le2page(le, page_link);
+        if (base + base->property == p) {
+            base->property += p->property;
+            ClearPageProperty(p);
+            list_del(&(p->page_link));
+        }
+    }
 }
 
 static size_t
 best_fit_nr_free_pages(void) {
-    return 0;
+    return nr_free;
 }
 
 // Framework tests: students must not modify basic_check or best_fit_check.
