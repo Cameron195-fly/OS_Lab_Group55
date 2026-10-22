@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <dtb.h>
+#include <buddy_pmm.h>
+#include <slub.h>
 
 int kern_init(void) __attribute__((noreturn));
 void grade_backtrace(void);
@@ -38,6 +40,12 @@ int kern_init(void) {
 
     // grade_backtrace();
     pmm_init();  // init physical memory management
+
+    /* lab2 扩展任务自检：放在 pmm_init() 之后，
+       这样 make grade 注入的 Test 1 / Test 2 已经打印完，不影响主线的 20/20 */
+    buddy_check();
+    slub_init();
+    slub_check();
 
     /* do nothing */
     while (1)

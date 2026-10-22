@@ -34,7 +34,7 @@ static void check_alloc_page(void);
 
 // init_pmm_manager - initialize a pmm_manager instance
 static void init_pmm_manager(void) {
-    pmm_manager = &best_fit_pmm_manager;   // lab2 function2-2: 切换为 Best-Fit
+    pmm_manager = &best_fit_pmm_manager;
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }
@@ -61,81 +61,29 @@ size_t nr_free_pages(void) {
     return pmm_manager->nr_free_pages();
 }
 
-//lab2 function1 2413541
-/* page_init - 物理内存探测 + Page 描述符布局 + 把空闲页交给 pmm_manager
- *
- * 初始化完成后的物理内存布局：
- *   [0x80000000, 0x80200000)   OpenSBI，保留
- *   [0x80200000, end)          内核镜像（代码/数据/bss），保留
- *   [end, pages)               补齐到页边界的空隙，保留
- *   [pages, pages + (npage-nbase)*sizeof(struct Page))  Page 描述符数组，保留
- *   [free_start, mem_end)      交给 pmm_manager 的完整空闲页
- *
- * 三类地址不能混用：
- *   虚拟地址（pages / end） -> PADDR() -> 物理地址 -> PPN() -> 页号
- */
 static void page_init(void) {
     extern char end[];
-
-    // 1. 设备树告诉我们能管哪段物理内存
     uint64_t mem_base = get_memory_base();
     uint64_t mem_size = get_memory_size();
-
-    if (mem_base == 0 || mem_size == 0) {
-        panic("page_init: invalid physical memory info from DTB (base=0x%lx, size=0x%lx)",
-              (unsigned long)mem_base, (unsigned long)mem_size);
-    }
-
-    // 可管理上界不能超过框架允许的范围
     uint64_t mem_end = mem_base + mem_size;
-    if (mem_end > (uint64_t)PHYSICAL_MEMORY_END) {
-        mem_end = (uint64_t)PHYSICAL_MEMORY_END;
-    }
-    if (mem_end <= mem_base) {
-        panic("page_init: empty manageable physical memory range");
-    }
 
-    // 2. 先定虚实偏移，后面 PADDR()/page2pa() 都依赖它
     va_pa_offset = PHYSICAL_MEMORY_OFFSET;
-
-    // npage 是"可管理物理页号上界"，不是页数：描述符覆盖 [nbase, npage)
     npage = PPN(mem_end);
-    if (npage <= nbase) {
-        panic("page_init: no manageable physical page (nbase=0x%lx, npage=0x%lx)",
-              (unsigned long)nbase, (unsigned long)npage);
-    }
 
-    // 3. 描述符数组紧接在内核镜像之后，并按页对齐
-    //    pages 是虚拟地址；要算内存布局，必须先用 PADDR() 转成物理地址
     pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
 
-    uintptr_t pages_end = (uintptr_t)pages + (npage - nbase) * sizeof(struct Page);
-    // 空闲区起点：描述符数组之后的完整页
-    uintptr_t free_start_pa = ROUNDUP(PADDR(pages_end), PGSIZE);
-    // 空闲区末端：内存末端向下对齐，不足一页的尾巴不下发
-    uintptr_t free_end_pa = ROUNDDOWN((uintptr_t)mem_end, PGSIZE);
-
-    // 4. 先把 [nbase, npage) 的描述符全部标记为保留
-    //    布局没做完之前不会有页面被误分配，内核尾页也就天然保持 reserved。
-    //    注意：这里不解除保留，init_memmap() 内部自己会清（它断言 PageReserved）
-    struct Page *p = pages;
-    for (size_t i = 0; i < npage - nbase; i++, p++) {
-        p->flags = 0;
-        p->property = 0;
-        set_page_ref(p, 0);
-        SetPageReserved(p);
+    size_t nr_pages = npage - nbase;
+    for (size_t i = 0; i < nr_pages; i++) {
+        pages[i].flags = 0;
+        pages[i].property = 0;
+        set_page_ref(pages + i, 0);
+        SetPageReserved(pages + i);
     }
 
-    cprintf("physical memory map:\n");
-    cprintf("  memory: 0x%016lx, [0x%016lx, 0x%016lx].\n",
-            (unsigned long)(mem_end - mem_base), (unsigned long)mem_base,
-            (unsigned long)(mem_end - 1));
-
-    // 5. 把完整空闲页交给当前 pmm_manager
-    if (free_start_pa < free_end_pa) {
-        init_memmap(pa2page(free_start_pa), (free_end_pa - free_start_pa) / PGSIZE);
-    } else {
-        cprintf("page_init: no complete free page after the page descriptor array\n");
+    uintptr_t pages_pa = PADDR((uintptr_t)pages);
+    uintptr_t free_pa = ROUNDUP(pages_pa + nr_pages * sizeof(struct Page), PGSIZE);
+    if (free_pa < mem_end) {
+        init_memmap(pa2page(free_pa), (mem_end - free_pa) / PGSIZE);
     }
 }
 
