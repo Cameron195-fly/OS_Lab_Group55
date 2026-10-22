@@ -16,7 +16,7 @@
 
 |成员|负责的练习/模块|主要交付物|
 |---|---|---|
-|2413541-赖鸿毅|功能模块一 · 任务一 `page_init()`；功能模块一 Challenge 思考题；环境适配（启动页表 / QEMU 版本）|`code/kern/mm/pmm.c`、`code/kern/init/entry.S`、`report/prompt.md` P1|
+|2413541-赖鸿毅|功能模块一 · 任务一 `page_init()`；功能模块一 Challenge 思考题；环境适配（启动页表 / QEMU 版本）；分支任务（gdb 调试 QEMU 的页表查询）|`code/kern/mm/pmm.c`、`code/kern/init/entry.S`、`report/prompt.md` P1|
 |2412386-唐港|功能模块二 · 任务一 First-Fit 思考题；任务二 Best-Fit 实现与 `init_pmm_manager()` 切换；测试与验证|`code/kern/mm/best_fit_pmm.c`、`code/kern/mm/pmm.c`（第 37 行）、`prompt.md` P2、`report/images/`|
 |2412440-王朝阳|功能模块二 · 任务三 Buddy System（两份 prompt + 测试）；Challenge SLUB（两份 prompt + 测试）|`code/kern/mm/buddy_pmm.*`、`code/kern/mm/slub.*`、`code/kern/init/init.c`、`prompt.md` P3–P6|
 
@@ -32,7 +32,7 @@
 
 |成员|撰写的报告章节|
 |---|---|
-|2413541-赖鸿毅|一、实验目的；二、实验环境；三、整体逻辑分析；四、功能模块零（QEMU 适配）与功能模块一（含 Challenge）；6.1 对操作系统的理解|
+|2413541-赖鸿毅|一、实验目的；二、实验环境；三、整体逻辑分析；四、功能模块零（QEMU 适配）、功能模块一（含 Challenge）、4.8 分支任务（QEMU 调试）；6.1 对操作系统的理解|
 |2412386-唐港|四、功能模块二（First-Fit 思考题）、功能模块三（Best-Fit 与改进空间）；五、测试与验证|
 |2412440-王朝阳|四、扩展任务 Buddy System、扩展任务 SLUB；6.2 AI 协作开发的经验|
 
@@ -752,7 +752,38 @@ static inline struct slab *slub_slab_of(void *obj) {
 `kmem_cache_create` 里的 `objs_per_slab = (PGSIZE - SLUB_OBJ_OFFSET) / obj_size`，
 其中 `SLUB_OBJ_OFFSET = ROUNDUP(sizeof(struct slab), 8)`，保证对象区不会压到 slab 头。
 
-#### 4.7.3 我的简化点
+#### 4.7.3 spec 与 prompt 是怎么写的（P5/P6）
+
+SLUB 与 Buddy 一样没有现成框架，所以也写了两份四段式 prompt：**P5 生成模块**、**P6 生成自检**
+（完整内容见 `report/prompt.md` 的 P5、P6）。
+
+* `[PROMPT]`：P5 说清"新增 `kern/mm/slub.c`/`slub.h`，实现 `kmem_cache_create/alloc/free` 三个接口，
+  底层只用 `alloc_pages(1)`/`free_pages(p,1)`"；P6 说清"`slub_check()` 覆盖四组：多尺寸跨 slab、
+  多 cache 交错、边界、页数复原"。
+* `[RELY]`：把 AI 看不到的本地事实写成清单——页层来自**当前活动管理器**；内核可访问的页内容地址
+  是 `page2pa(page) + va_pa_offset`；`PADDR(kva)` 要求 `kva >= KERNBASE`，而低端物理页的直接映射
+  地址落在 `KERNBASE` 以下，**不能拿 `PADDR` 去反查对象所属页**。
+* `[GUARANTEE]`：写成"禁止项"——对象区起点必须
+  `#define SLUB_OBJ_OFFSET (ROUNDUP(sizeof(struct slab), SLUB_ALIGN))`；页内容地址统一走
+  `slub_page_to_kva()`；`kmem_cache_free` 里 `bool was_full = (slab->inuse == slab->total);`
+  **必须在 `inuse--` 之前取**；不新增 `pmm_manager`、不改活动管理器；失败一律返回 `NULL` 不 `panic`。
+* `[SPECIFICATION]`：逐条给结构布局与流程——`struct slab` 放页首、对象区从 `SLUB_OBJ_OFFSET` 开始、
+  空闲对象前 8 字节内嵌 freelist、`obj & ~(PGSIZE-1)` 由对象反推 slab、`partial/full` 两条链表、
+  分配取 partial 头、`inuse` 归零整页归还。
+
+**v1 → v2 的三处修正**（都是 `[GUARANTEE]` 里补"禁止项"补出来的）：
+
+| 版本 | 偏差 | 修正 |
+|---|---|---|
+| P5 v1 | 对象区起点写成 `sizeof(struct slab)`，没 `ROUNDUP` | 加 `SLUB_OBJ_OFFSET`，按 `sizeof(void*)` 对齐，避免 freelist 指针非对齐访问 |
+| P5 v1 | 用 `PADDR(obj)` 求"对象 → 页"，方向就错了，且对低于 `KERNBASE` 的地址直接 `panic` | 统一用 `page2pa(page) + va_pa_offset`（`slub_page_to_kva`），并禁止对对象地址用 `PADDR` |
+| P5 v1 | `kmem_cache_free` 先 `inuse--` 再判 `was_full`，导致"从满变不满"的 slab 永久卡在 `full` | `was_full` 提前到自减之前 |
+| P6 v1 | 只测一个尺寸、"不崩溃即通过" | 改成 4 组：五档尺寸跨 slab + 对象地址合法性校验、3 cache 交错 + 确定性洗牌释放、边界（`free(NULL)`/同尺寸复用/超页返回 `NULL`）、`nr_free_pages()` 复原 |
+
+这样写的体会：**四段式里真正起作用的是 `[GUARANTEE]` 中"不许……"那几句**，因为
+"我不知道自己不知道什么"的部分，只能靠把 v1 暴露出来的错误写成禁止项来堵住。
+
+#### 4.7.4 我的简化点
 
 1. **不做 per-CPU 缓存**：真实 SLUB 每个 CPU 有一份 current slab 以减少锁竞争，本实验是单核
 无并发，直接用 `partial/full` 两条链表；
@@ -761,7 +792,7 @@ static inline struct slab *slub_slab_of(void *obj) {
 "页层资源已归还"的强断言；
 4. **固定 cache 池**（8 个）而不是动态 `kmalloc` 元数据：内核里还没有堆，用静态池最省事。
 
-#### 4.7.4 测试覆盖了哪些行为、为什么有效
+#### 4.7.5 测试覆盖了哪些行为、为什么有效
 
 |测试组|覆盖的行为|抓什么 bug|
 |---|---|---|
@@ -781,7 +812,7 @@ static inline struct slab *slub_slab_of(void *obj) {
 * 第 3、4 组把"边界"和"资源守恒"分开断言，泄漏时会精确停在 `nr_free_pages() != free_before`
 这一行，而不是在主线的 Test 1 里莫名失败。
 
-#### 4.7.5 生成代码过程中出现的 bug 与解决
+#### 4.7.6 生成代码过程中出现的 bug 与解决
 
 1. **`slub_page_to_kva` 忘加 `va_pa_offset`**：第一版写成 `(void *)page`，直接把**描述符数组**
 的地址当成了页的内容地址，一写 freelist 就把描述符改坏。正确写法是
@@ -794,7 +825,7 @@ static inline struct slab *slub_slab_of(void *obj) {
 4. **`inuse == 0` 分支顺序**：先判断 `was_full` 再做归零判断，空 slab 会被挪回 `partial`
 而不归还页层，`cache->slabs` 永远不归零，第 4 组断言失败。
 
-#### 4.7.6 运行输出（本机实测）
+#### 4.7.7 运行输出（本机实测）
 
 ```text
 [Test] SLUB: size 16 -> 256 objects, 2 slab(s), all distinct
@@ -811,6 +842,205 @@ static inline struct slab *slub_slab_of(void *obj) {
 
 ---
 
+### 4.8 分支任务：用 gdb 调试 QEMU 的页表查询过程
+
+**负责人：** 2413541-赖鸿毅
+
+**目标**：ucore 已经运行在虚拟地址空间，此时一条访存/取指指令产生的是虚拟地址，它要经过 QEMU 模拟的 MMU
+（先查 TLB，未命中再走 Sv39 三级页表）才能变成物理地址。本任务就是**用 gdb 分别调试"模拟器"和"被模拟的内核"两个层面**，
+把这条翻译链路一步步看清楚。指导书也说明了它的两个目的：一是对比模拟器的实现、真正理解地址翻译过程；二是练习在大模型
+帮助下自己捋出一条调试流程 —— 本节按这个思路展开，操作细节以**本机实测可复现**为准（指导书也写明"助教的思路仅供参考，
+操作合理即可"）。
+
+#### 4.8.1 准备：指导书的两步 + 我们的实测处理
+
+| 指导书要求 | 我们的处理 | 依据 |
+|---|---|---|
+| ① 重编带调试信息的 QEMU：`./configure --target-list=riscv32-softmmu,riscv64-softmmu --enable-debug && make -j$(nproc)`，**不要 `make install`**（系统里保留两个 QEMU） | **省略重编**：本机 `/opt/qemu/bin/qemu-system-riscv64` 已经带调试信息 | `readelf -S` 有 8 个 `.debug_*` 段；`DW_AT_comp_dir=/home/omen/qemu-7.0.0/build`，源码树就在该路径，gdb 能直接显示 `cpu_helper.c` 源码行 |
+| ② 改 Makefile 的 `QEMU := /path/…/qemu-system-riscv64` 指向调试版 | 不改文件，用命令行覆盖 `QEMU="…"`，效果等价（Makefile 保持课程原样） | `make debug QEMU="qemu-system-riscv64 -kernel bin/ucore.img"` 实测可用 |
+
+两个 gdb 的分工（指导书的"双重 GDB"）：
+
+| 会话 | 用什么 | 调什么 | 怎么连 |
+|---|---|---|---|
+| 终端 1 | `make debug`（自带 `-s -S`） | 启动 QEMU 并停在复位态 | `-s` 开 stub `:1234`，`-S` 让 vCPU 不跑 |
+| 终端 2 | 宿主 `gdb`（x86 的普通 gdb） | **QEMU 的 C 源码**（模拟器侧） | `attach <qemu pid>` |
+| 终端 3 | `make gdb`（`riscv64-unknown-elf-gdb`） | **guest 内核 ucore**（guest 侧） | `target remote localhost:1234` |
+
+> 本机 WSL 里默认没有宿主 `gdb`，所以先 `sudo apt install -y gdb`。
+
+#### 4.8.2 主线：双 gdb 三终端，停在地址翻译函数里单步
+
+**终端 1**：`cd code && make debug QEMU="qemu-system-riscv64 -kernel bin/ucore.img"`（QEMU 停在复位态）。
+
+**终端 2**（宿主 gdb）：
+
+```text
+$ pidof qemu-system-riscv64          # 取 PID（只应有一个，先 pkill 旧 QEMU）
+$ sudo gdb
+(gdb) file /opt/qemu/bin/qemu-system-riscv64     # 先加载符号，否则 attach 后没有源码/栈
+(gdb) set pagination off
+(gdb) handle SIGPIPE nostop noprint pass         # 关键：否则后台写串口会被 SIGPIPE 停住
+(gdb) attach <qemu pid>
+(gdb) b get_physical_address if addr == 0xffffffffc02000d6      # 函数入口
+(gdb) b cpu_helper.c:941 if addr == 0xffffffffc02000d6          # 走表循环里（pte 已读出）
+(gdb) continue
+```
+
+**终端 3**（guest gdb）：`make gdb` 后
+
+```text
+(gdb) info registers pc satp          # pc=0x1000、satp=0（复位态，还没开分页）
+(gdb) p/x (unsigned long)&boot_page_table_sv39   # 0xffffffffc0207000（页表虚拟地址）
+(gdb) x/4gx 0x80207000                # 用物理地址直接读页表：第 0、1 项为 0（unmapped）
+(gdb) x/1gx 0x80207010                # [2]   = 0x00000000200000cf（低 1 GiB 恒等映射，本项目补的）
+(gdb) x/1gx 0x80207ff8                # [511] = 0x00000000200000cf（内核 1 GiB 大页）
+(gdb) b kern_init
+(gdb) c                               # 只有这一步让 vCPU 真正开跑
+```
+
+**触发点**：guest 从 OpenSBI 跳到 `0xffffffffc02000d6`（`kern_init`）时需要取指，必须做一次地址翻译 →
+终端 2 自动停在 `get_physical_address`。实测输出（本机 QEMU 7.0.0）：
+
+```text
+# 终端2：命中函数入口（cpu_helper.c:750 是函数体第一行）
+Thread 3 "qemu-system-ris" hit Breakpoint 1, get_physical_address (
+    env=…, physical=…, prot=…, addr=addr@entry=18446744072637907158,
+    fault_pte_addr=0x0, access_type=access_type@entry=2, mmu_idx=1,
+    first_stage=true, two_stage=false, is_debug=false) at ../target/riscv/cpu_helper.c:750
+(gdb) bt 4
+#0  get_physical_address (…)      at ../target/riscv/cpu_helper.c:750
+#1  riscv_cpu_tlb_fill (…)        at ../target/riscv/cpu_helper.c:1278
+#2  tlb_fill (…)                  at ../accel/tcg/cputlb.c:1313
+#3  get_page_addr_code_hostp (…)  at include/exec/cpu-all.h:467
+(gdb) p/x addr
+$1 = 0xffffffffc02000d6
+
+# 终端2：continue 后命中走表循环（cpu_helper.c:941  if (!(pte & PTE_V))），此时局部变量都有值
+(gdb) p levels      → 3
+(gdb) p ptidxbits   → 9
+(gdb) p/x ptshift   → 0x12        （18 = (3-1)*9，本轮取 addr>>30）
+(gdb) p/x base      → 0x80207000  （根页表物理地址 = satp.PPN<<12）
+(gdb) p/x pte       → 0x200000cf  （读到的 PTE，就是 [511]）
+(gdb) p i           → 0           （第 0 轮就是叶子 → 1 GiB 大页一轮出结果）
+(gdb) p/x ppn       → 0x80000     （0x80000<<12 = 0x80000000）
+(gdb) finish        → Value returned is $9 = 0   （TRANSLATE_SUCCESS）
+
+# 终端3：命中 kern_init 后
+pc             0xffffffffc02000d6   0xffffffffc02000d6 <kern_init>
+satp           0x8000000000080207   -9223372036854251001   （MODE=8 即 Sv39，PPN=0x80207）
+sp             0xffffffffc0207000   0xffffffffc0207000
+```
+
+三点结论：
+
+1. `satp` 从 `0` 变成 `0x8000000000080207` → `entry.S` 已经建好启动页表并打开分页；
+2. 取指 `0xffffffffc02000d6` 触发 TLB 未命中，QEMU 依次经过 `tlb_fill → riscv_cpu_tlb_fill → get_physical_address`；
+3. 三级循环第 0 轮就命中叶子（`i=0`、`pte=0x200000cf`、`ppn=0x80000`），物理地址 `0x802000d6`，
+   与虚拟地址相差 `0xFFFFFFFF40000000`，正好是本工程的 `PHYSICAL_MEMORY_OFFSET`。
+
+#### 4.8.3 补充观察：用 `-d mmu` 日志交叉验证（我们在指导书基础上加的手段）
+
+gdb 单步能看到寄存器与变量，但看不到"整条翻译流水账"。QEMU 的 `-d mmu` 会把每次 TLB 填充打印出来
+（来源：`target/riscv/cpu_helper.c` 里 `riscv_cpu_tlb_fill()` 的 `qemu_log_mask(CPU_LOG_MMU, …)`），正好用来对照：
+
+```bash
+qemu-system-riscv64 -machine virt -nographic -bios default \
+    -kernel bin/ucore.img -d mmu -D /tmp/mmu.log >/dev/null 2>&1   # 几秒后 Ctrl-C
+grep -B1 -A2 -m1 c02000d6 /tmp/mmu.log
+```
+
+```text
+riscv_cpu_tlb_fill ad ffffffffc02000d6 rw 2 mmu_idx 1
+riscv_cpu_tlb_fill address=ffffffffc02000d6 ret 0 physical 00000000802000d6 prot 7
+riscv_cpu_tlb_fill PMP address=00000000802000d6 ret 0 prot 7 tlb_size 4096
+```
+
+| 字段 | 含义 |
+|---|---|
+| `ad ffffffffc02000d6` | 触发翻译的虚拟地址（与 gdb 里 `addr` 完全一致） |
+| `rw 2` | 访问类型：0=load、1=store、2=取指（这里 `kern_init` 是取指） |
+| `mmu_idx 1` | 特权级（`riscv_cpu_mmu_index()` 返回 `env->priv`）：0=U、1=S、3=M，所以 1 是内核；OpenSBI 的日志是 3 |
+| `physical 00000000802000d6` | 翻译结果：`0xffffffffc02000d6 - 0xffffffff40000000 = 0x802000d6` |
+| `prot 7` / `tlb_size 4096` | `prot = PAGE_READ + PAGE_WRITE + PAGE_EXEC = 1 + 2 + 4`，即 RWX；页粒度 4 KiB（命中 1 GiB 大页时 `tlb_size` 会是 `0x40000000`） |
+
+#### 4.8.4 QEMU 源码的关键调用路径与关键分支（QEMU 7.0.0 实测行号）
+
+| 阶段 | 函数 | 位置 | 关键动作 |
+|---|---|---|---|
+| guest 访存/取指 | TCG 生成的 softmmu 内联代码 | — | 先查 TLB |
+| 命中判定 | `tlb_hit()` / `tlb_hit_page()` | `include/exec/cpu-all.h:405,416` | `addr == (tlb_addr & (TARGET_PAGE_MASK \| TLB_INVALID_MASK))` |
+| 未命中入口 | `tlb_fill()` | `accel/tcg/cputlb.c:1303` | 调 `cc->tcg_ops->tlb_fill`，随后 `assert(ok)` |
+| 架构相关 | `riscv_cpu_tlb_fill()` | `target/riscv/cpu_helper.c:1181`（实测命中在 1278） | 判两阶段/MPRV，`mode = mmu_idx` |
+| 走表 | `get_physical_address()` | `target/riscv/cpu_helper.c:744`（函数体第一行 750；循环 876；PTE 检查 941） | 三级页表遍历 |
+| 成功 | `tlb_set_page()` | `accel/tcg/cputlb.c:1278` | 写入 "vpn → ppn + prot" |
+| 失败 | `raise_mmu_exception()` → `riscv_raise_exception()` | `cpu_helper.c:1056` / `riscv_cpu_do_interrupt()` `1327` | 按访问类型选 `INST_PAGE_FAULT`（`exec_page_fault`，cause=`0xc`）等 |
+| 刷新 TLB | `sfence.vma` → `helper_tlb_flush()` → `tlb_flush()` | `target/riscv/op_helper.c:239`、`cputlb.c:395` | S 模式且 `mstatus.TVM=1` 时先抛非法指令 |
+
+走表循环的关键分支（`get_physical_address`）：
+
+```c
+for (i = 0; i < levels; i++, ptshift -= ptidxbits) {
+    idx = (addr >> (PGSHIFT + ptshift)) & ((1 << ptidxbits) - 1);   /* 9 位索引 */
+    hwaddr pte_addr = base + idx * ptesize;                         /* PTE 物理地址 */
+    target_ulong pte = address_space_ldq(cs->as, pte_addr, attrs, &res);
+    if (!(pte & PTE_V)) {                       /* V=0 → FAIL */
+        return TRANSLATE_FAIL;
+    } else if (!(pte & (PTE_R | PTE_W | PTE_X))) {   /* R/W/X 全 0 → 内部节点，继续下一级 */
+        base = ppn << PGSHIFT;
+    } else if ((pte & (PTE_R|PTE_W|PTE_X)) == PTE_W ||
+               (pte & (PTE_R|PTE_W|PTE_X)) == (PTE_W|PTE_X)) {   /* 保留组合 → FAIL */
+        return TRANSLATE_FAIL;
+    } else if ((pte & PTE_U) && (mode != PRV_U) && (!sum || access_type == MMU_INST_FETCH)) {
+        return TRANSLATE_FAIL;                  /* U=1 的页，S 模式不能取指 ← 我们踩过的坑 */
+    } else if (ppn & ((1ULL << ptshift) - 1)) {
+        return TRANSLATE_FAIL;                  /* 大页 PPN 未对齐 → FAIL */
+    } else if (access_type == MMU_INST_FETCH && !(pte & PTE_X)) {
+        return TRANSLATE_FAIL;                  /* 取指权限：exec_page_fault 正出自这里 */
+    } else {
+        target_ulong updated_pte = pte | PTE_A | (access_type == MMU_DATA_STORE ? PTE_D : 0);
+        /* 与内存中的 PTE 做 qatomic_cmpxchg 回写 A/D 位 */
+    }
+}
+```
+
+**一句话总结**：`tlb_hit → tlb_fill → riscv_cpu_tlb_fill → get_physical_address → tlb_set_page`；
+失败则 `raise_mmu_exception → riscv_cpu_do_interrupt`。我们的 1 GiB 大页在第一轮循环就是叶子，
+所以 Sv39 名义三级、实际"一轮出结果"。
+
+#### 4.8.5 QEMU 模拟的 TLB 与真实 CPU 的 TLB 的区别
+
+| 维度 | 真实 CPU | QEMU（TCG/softmmu） |
+|---|---|---|
+| 形态 | 全相联/组相联 CAM，几十~几千项 | 软件哈希表 `CPUTLB`（`env->tlb`），按 vaddr 低位索引，另有 victim TLB 做二次机会 |
+| 匹配 | 页号 + ASID + 全局位 | `tlb_hit_page()` 位比较（`TARGET_PAGE_MASK`，另带 `TLB_INVALID_MASK`） |
+| 填表者 | 硬件页表遍历器 | 软件：`riscv_cpu_tlb_fill()` → `get_physical_address()` → `tlb_set_page()` |
+| 失效 | `sfence.vma` 直接清硬件结构 | `helper_tlb_flush()` → `tlb_flush()` 清软件表 |
+| 一致性 | 硬件保证 | TCG 用 `qatomic_cmpxchg` 回写 A/D；另有 `TLB_NOTDIRTY`、`TLB_WATCHPOINT`、`TLB_MMIO` 等标记 |
+| 观察 | 不可观察 | 可 gdb 单步、可 `-d mmu` 打日志 —— 这正是本分支任务的价值 |
+
+#### 4.8.6 生成/调试过程中踩的坑与大模型协作
+
+1. **`[2]` 缺失导致 `exec_page_fault`**：`csrw satp` 之后 PC 仍是物理地址 `0x80200038`，只映射高地址就取指缺页。为把这条 fault 变成可复现的证据，我们**不动主仓库**，把工程拷到 `/tmp/lab2_no2`，只在副本里把 `entry.S` 的页表前两项改成"前三项全 0"：
+
+   ```asm
+   ; 修改前
+       .zero 8 * 2                          # [0], [1] : unmapped
+       .quad (0x80000 << 10) | 0xcf         # [2]   : 低 1GiB 恒等映射（过渡用）
+   ; 修改后
+       .zero 8 * 3                          # [0], [1], [2] : unmapped
+   ```
+
+   重编后 `-d int` 立刻给出 `cause:000000000000000c, epc:0x80200038, tval:0x80200038, desc=exec_page_fault`，之后一直在 `epc=0x80200000` 上循环（trap 到 `stvec` 的死循环）；恢复 `[2]` 后一切正常。抓日志用
+   `timeout 8 qemu-system-riscv64 -machine virt -nographic -bios default -kernel bin/ucore.img -d int -D /dev/stdout 2>/dev/null | grep -m2 exec_page_fault`（fault 会死循环、日志量极大，所以现抓现停）。
+2. **PTE 的 U 位**：把 `0xcf & ~0x10` 误算成 `0xbf`，反而把 U 置 1，新版 QEMU 严格按规范拒绝 S 模式从 U=1 页取指，又 fault 一次。教训是标志位要逐位核对。
+3. **`attach` 后 QEMU 卡死**：原因是没执行 `handle SIGPIPE nostop noprint`；这一点由大模型定位（把 gdb 输出贴给模型后得到的原因）。
+4. **`sudo gdb` 直接 `attach` 会没有符号**：第一次只敲 `attach`，之后 `bt` 报 `No stack` / `No symbol table is loaded`，`continue` 变成空操作，看起来像"断点不命中"。解决办法是先 `file /opt/qemu/bin/qemu-system-riscv64` 再 `attach`。
+5. **条件断点的必要性**：`get_physical_address()` 每次 TLB miss 都会调用（实测 `-d mmu` 一次启动近 6000 行日志），无条件断点根本没法调试；用 `if addr == 0xffffffffc02000d6` 把断点钉在"必定被取指的地址"上。这也正是指导书"思考"一题的标准答案 —— 不必先调 guest，只要在 QEMU 里打好条件断点、让 ucore 自己跑，就会在合适的位置停下来。
+6. **靠大模型解决的问题**：两个 gdb 分别调什么、`handle SIGPIPE nostop noprint` 的作用、`riscv_cpu_tlb_fill`/`get_physical_address`/`tlb_hit` 三个关键函数的位置、条件断点与"有符号/无符号"的排查思路。
+
+---
+
 ## 五、测试与验证
 
 **负责人：** 2412386-唐港
@@ -823,6 +1053,9 @@ static inline struct slab *slub_slab_of(void *obj) {
 |②|切换后（Best-Fit）|`images/make_qemu_best_fit.png`|`memory management: best_fit_pmm_manager` + 上面几行|
 |③|注入测试|`images/injected_tests.png`|`[Test 1] Page Init: PASS` + `[Test 2] Best-Fit: PASS`|
 |④|make grade|`images/test_result.png`|`check page init: OK` + `check best fit: OK` + `Total Score: 20/20`|
+
+> 分支任务（4.8）不贴截图：它的证据是 `-d int`、`-d mmu` 的原始日志与双 gdb 会话记录，
+> 已经以代码块形式逐字贴在第 4.8 节里（日志比截图更可核对，也避免终端截图糊成一片）。
 
 **唐港（2412386）提供的 4 张截图：**
 
@@ -887,9 +1120,9 @@ First-Fit 会取第一个装得下的 2 页块（返回 `p0+1`，还要切分）
 
 **2. OS 原理中很重要、但本实验没有对应上的知识点**
 
-* **按需调页与页面置换**（FIFO/LRU/Clock、工作集、Belady 异常）：本实验的映射是启动时一次建好，没有缺页异常处理，也没有换入换出（指导书 lab9 才涉及 page fault 与 swapping）；
+* **按需调页与页面置换**（FIFO/LRU/Clock、工作集、Belady 异常）：本实验的映射是启动时一次建好，没有缺页异常处理，也没有换入换出；
 * **段式/段页式中的"段"**：实验直接用 Sv39 分页，没有段表、没有"逻辑地址→线性地址"的段变换；
-* **进程地址空间隔离与共享**：没有用户进程、没有每进程独立页表，也没有 `fork`/`execve` 的地址空间复制、写时复制、`mmap`、共享内存（lab4/lab5/lab9 涉及）；
+* **进程地址空间隔离与共享**：没有用户进程、没有每进程独立页表，也没有 `fork`/`execve` 的地址空间复制、写时复制、`mmap`、共享内存；
 * **虚拟内存容量扩展**：没有磁盘交换区，"虚拟内存 > 物理内存"的机制未体现；
 * **多核与并发内存管理**：本实验是单 hart 顺序执行，`free_list`/`nr_free` 没有任何锁或关中断保护；
 * **内存回收与统计机制**：没有水位线、LRU 链表、`/proc/meminfo` 之类的回收与统计，只有 `nr_free_pages()` 一个计数。
