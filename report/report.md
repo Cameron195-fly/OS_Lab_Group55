@@ -852,97 +852,187 @@ SLUB 与 Buddy 一样没有现成框架，所以也写了两份四段式 prompt�
 帮助下自己捋出一条调试流程 —— 本节按这个思路展开，操作细节以**本机实测可复现**为准（指导书也写明"助教的思路仅供参考，
 操作合理即可"）。
 
-#### 4.8.1 准备：指导书的两步 + 我们的实测处理
+#### 4.8.1 调试环境与三终端分工
 
-| 指导书要求 | 我们的处理 | 依据 |
-|---|---|---|
-| ① 重编带调试信息的 QEMU：`./configure --target-list=riscv32-softmmu,riscv64-softmmu --enable-debug && make -j$(nproc)`，**不要 `make install`**（系统里保留两个 QEMU） | **省略重编**：本机 `/opt/qemu/bin/qemu-system-riscv64` 已经带调试信息 | `readelf -S` 有 8 个 `.debug_*` 段；`DW_AT_comp_dir=/home/omen/qemu-7.0.0/build`，源码树就在该路径，gdb 能直接显示 `cpu_helper.c` 源码行 |
-| ② 改 Makefile 的 `QEMU := /path/…/qemu-system-riscv64` 指向调试版 | 不改文件，用命令行覆盖 `QEMU="…"`，效果等价（Makefile 保持课程原样） | `make debug QEMU="qemu-system-riscv64 -kernel bin/ucore.img"` 实测可用 |
+**环境**：组内两台机器各跑了一遍，流程完全一致，只是行号不同——截图取自 **QEMU 4.1.1**（`/home/tanggang/qemu-4.1.1`，`./configure --enable-debug` 编译、**不做 `make install`**，系统里同时保留"正式版"和"调试版"两个 QEMU）；另一台是 **QEMU 7.0.0**（`/opt/qemu/bin/qemu-system-riscv64`，`readelf -S` 有 8 个 `.debug_*` 段，`DW_AT_comp_dir=/home/omen/qemu-7.0.0/build`）。此外 `cpu_helper.c:252 / 334 / 337 / 438 / 472` 是 4.1.1 的行号，7.0.0 的对应位置见 4.8.4 节的行号对照，换版本用 `grep -n` 重新定位即可。
 
-两个 gdb 的分工（指导书的"双重 GDB"）：
+三个终端（指导书的三终端流程）：
 
-| 会话 | 用什么 | 调什么 | 怎么连 |
+| 会话 | 命令 | 调什么 | 怎么连 |
 |---|---|---|---|
-| 终端 1 | `make debug`（自带 `-s -S`） | 启动 QEMU 并停在复位态 | `-s` 开 stub `:1234`，`-S` 让 vCPU 不跑 |
-| 终端 2 | 宿主 `gdb`（x86 的普通 gdb） | **QEMU 的 C 源码**（模拟器侧） | `attach <qemu pid>` |
-| 终端 3 | `make gdb`（`riscv64-unknown-elf-gdb`） | **guest 内核 ucore**（guest 侧） | `target remote localhost:1234` |
+| **终端 A** | `make debug QEMU="qemu-system-riscv64 -kernel bin/ucore.img"` | QEMU 模拟器进程 | Makefile 的 `debug` 目标自带 `-s -S`：`-s` 开 gdb stub `:1234`，`-S` 让 vCPU 停在复位态 |
+| **终端 B** | `sudo gdb` → `attach <qemu pid>` | **QEMU 的 C 源码**（软件模拟的 MMU） | ptrace；必须先 `continue` 让进程跑起来，否则 stub 线程不转、终端 C 连不上 |
+| **终端 C** | `make gdb`（`riscv64-unknown-elf-gdb`） | **guest 内核 ucore** | `target remote localhost:1234`，由 QEMU 的 stub 代理；它的 `c` 才是让 vCPU 真正开跑的指令 |
 
-> 本机 WSL 里默认没有宿主 `gdb`，所以先 `sudo apt install -y gdb`。
+#### 4.8.2 主线：三终端 + 条件断点，一步一步看完一次取指翻译
 
-#### 4.8.2 主线：双 gdb 三终端，停在地址翻译函数里单步
+**思路（也是指导书"思考"题的答案）**：不必先追某条访存指令，只要盯住"**内核 C 入口 `kern_init` 的第一条指令**"这个一定被取指的虚拟地址，在 QEMU 的翻译路径上按"入口 → 读 PTE → 算物理地址 → 填 TLB"各下一个断点，跑一次启动就能依次停 5 次，最后一次回到 guest 侧验证。
 
-**终端 1**：`cd code && make debug QEMU="qemu-system-riscv64 -kernel bin/ucore.img"`（QEMU 停在复位态）。
+**① 终端 A：起 QEMU（停在复位态）**
 
-**终端 2**（宿主 gdb）：
+```bash
+make debug QEMU="qemu-system-riscv64 -kernel bin/ucore.img"    # 等价于 qemu … -gdb tcp::1234 -S
+```
+
+**② 终端 B：attach QEMU，用"地址 + 访问类型"两个条件掐住取指翻译**
 
 ```text
-$ pidof qemu-system-riscv64          # 取 PID（只应有一个，先 pkill 旧 QEMU）
+$ pgrep -f 'qemu-system-riscv64 -machine'     # 记下 PID
 $ sudo gdb
-(gdb) file /opt/qemu/bin/qemu-system-riscv64     # 先加载符号，否则 attach 后没有源码/栈
+(gdb) handle SIGPIPE nostop noprint            # 漏了这句，后台写串口会被 SIGPIPE 打死
 (gdb) set pagination off
-(gdb) handle SIGPIPE nostop noprint pass         # 关键：否则后台写串口会被 SIGPIPE 停住
-(gdb) attach <qemu pid>
-(gdb) b get_physical_address if addr == 0xffffffffc02000d6      # 函数入口
-(gdb) b cpu_helper.c:941 if addr == 0xffffffffc02000d6          # 走表循环里（pte 已读出）
-(gdb) continue
+(gdb) set confirm off
+(gdb) break riscv_cpu_tlb_fill if address == 0xffffffffc02000d8 && access_type == 2
+Breakpoint 1 at 0x625d5f5b7de0: file /home/tanggang/qemu-4.1.1/target/riscv/cpu_helper.c, line 438.
+(gdb) c
+Continuing.
 ```
 
-**终端 3**（guest gdb）：`make gdb` 后
+> 图 4-8-1 最上面那两行 `Unrecognized or ambiguous flag word: "set"`，是当时把几条命令**一起粘**进 gdb 触发的报错；逐条敲不会有这一行，重敲一次就正常（截图里后面是重敲后的结果）。
+
+两个条件各管一件事：
+
+- `address == 0xffffffffc02000d8`：只盯 `kern_init` 这个地址（本次构建里 `kern_init` 的第一条指令就在 `0xd8`，见终端 C 的 `b kern_init`）；
+- `access_type == 2`：只要**取指**。光有地址条件会被"假命中"骗——`attach` 之后 gdb 自己读写 guest 内存（`x`、`p`、甚至 stub 内部取指令）也会走地址翻译，那些请求是 `access_type=0`（load）、`priv=3`（M 态）、`satp=0`，不是我们要观察的那一次。
+
+![图 4-8-1 终端 B：`handle SIGPIPE`、关分页/确认，并下"地址 + 取指"双条件断点，`break riscv_cpu_tlb_fill` 落在 `cpu_helper.c:438`，随后 `continue`](./images/gdb_t2_setup_breakpoint.png)
+
+**③ 终端 C：连 stub、给 guest 下断点**
 
 ```text
-(gdb) info registers pc satp          # pc=0x1000、satp=0（复位态，还没开分页）
-(gdb) p/x (unsigned long)&boot_page_table_sv39   # 0xffffffffc0207000（页表虚拟地址）
-(gdb) x/4gx 0x80207000                # 用物理地址直接读页表：第 0、1 项为 0（unmapped）
-(gdb) x/1gx 0x80207010                # [2]   = 0x00000000200000cf（低 1 GiB 恒等映射，本项目补的）
-(gdb) x/1gx 0x80207ff8                # [511] = 0x00000000200000cf（内核 1 GiB 大页）
-(gdb) b kern_init
-(gdb) c                               # 只有这一步让 vCPU 真正开跑
+$ /opt/riscv/bin/riscv64-unknown-elf-gdb        # 或 make gdb
+(gdb) file bin/kernel
+Reading symbols from bin/kernel...
+(gdb) set arch riscv:rv64
+The target architecture is set to "riscv:rv64".
+(gdb) target remote localhost:1234
+Remote debugging using localhost:1234
+0x0000000000001000 in ?? ()
+(gdb) break kern_init
+Breakpoint 1 at 0xffffffffc02000d8: file kern/init/init.c, line 30.
+(gdb) c
+Continuing.
 ```
 
-**触发点**：guest 从 OpenSBI 跳到 `0xffffffffc02000d6`（`kern_init`）时需要取指，必须做一次地址翻译 →
-终端 2 自动停在 `get_physical_address`。实测输出（本机 QEMU 7.0.0）：
+`break kern_init` 是**guest 侧**的断点，它只负责"记住地址"；真正让 vCPU 跑起来的是终端 C 这里的 `c`（因为终端 A 的 QEMU 带着 `-S`）。此后 ucore 从复位向量开始，经 OpenSBI、`entry.S` 设置 `satp` 并执行 `sfence.vma`，最后 `jr kern_init`——**这时才产生第一次 Sv39 取指翻译**，于是终端 B 的断点 1 命中。此时终端 C 的提示符还停在 `Continuing.`，等 QEMU 停在 `kern_init` 才会回来。
+
+![图 4-8-2 终端 C：`file`/`set arch`/`target remote` 连上 stub，`break kern_init` 解析到 `0xffffffffc02000d8`（`init.c:30`），`c` 放行 vCPU](./images/gdb_t3_connect_bp.png)
+
+**④ 终端 B：断点 1 命中（`riscv_cpu_tlb_fill` 入口，TLB miss）**
 
 ```text
-# 终端2：命中函数入口（cpu_helper.c:750 是函数体第一行）
-Thread 3 "qemu-system-ris" hit Breakpoint 1, get_physical_address (
-    env=…, physical=…, prot=…, addr=addr@entry=18446744072637907158,
-    fault_pte_addr=0x0, access_type=access_type@entry=2, mmu_idx=1,
-    first_stage=true, two_stage=false, is_debug=false) at ../target/riscv/cpu_helper.c:750
-(gdb) bt 4
-#0  get_physical_address (…)      at ../target/riscv/cpu_helper.c:750
-#1  riscv_cpu_tlb_fill (…)        at ../target/riscv/cpu_helper.c:1278
-#2  tlb_fill (…)                  at ../accel/tcg/cputlb.c:1313
-#3  get_page_addr_code_hostp (…)  at include/exec/cpu-all.h:467
-(gdb) p/x addr
-$1 = 0xffffffffc02000d6
-
-# 终端2：continue 后命中走表循环（cpu_helper.c:941  if (!(pte & PTE_V))），此时局部变量都有值
-(gdb) p levels      → 3
-(gdb) p ptidxbits   → 9
-(gdb) p/x ptshift   → 0x12        （18 = (3-1)*9，本轮取 addr>>30）
-(gdb) p/x base      → 0x80207000  （根页表物理地址 = satp.PPN<<12）
-(gdb) p/x pte       → 0x200000cf  （读到的 PTE，就是 [511]）
-(gdb) p i           → 0           （第 0 轮就是叶子 → 1 GiB 大页一轮出结果）
-(gdb) p/x ppn       → 0x80000     （0x80000<<12 = 0x80000000）
-(gdb) finish        → Value returned is $9 = 0   （TRANSLATE_SUCCESS）
-
-# 终端3：命中 kern_init 后
-pc             0xffffffffc02000d6   0xffffffffc02000d6 <kern_init>
-satp           0x8000000000080207   -9223372036854251001   （MODE=8 即 Sv39，PPN=0x80207）
-sp             0xffffffffc0207000   0xffffffffc0207000
+Thread 2 "qemu-system-ris" hit Breakpoint 1, riscv_cpu_tlb_fill (…) at /home/tanggang/qemu-4.1.1/target/riscv/cpu_helper.c:438
+438     {
+(gdb) p/x address       → $1 = 0xffffffffc02000d8
+(gdb) p access_type     → $2 = MMU_INST_FETCH
+(gdb) p mmu_idx         → $3 = 1
+(gdb) p/x ((RISCVCPU *)cs)->env.satp                      → $4 = 0x8000000000080205
+(gdb) p/x ((((RISCVCPU *)cs)->env.satp & 0xfffffffffff) << 12)  → $5 = 0x80205000
 ```
 
-三点结论：
+- `mmu_idx = 1` 表示这次访问在 **S 模式**（QEMU 的 TLB 按特权级分开存，`0=U、1=S、3=M`）；
+- `satp = 0x8000000000080205`：MODE=8 即 Sv39，低 44 位 `0x80205` 是根页表的 **PPN**，左移 12 位得根表物理地址 `0x80205000`。
 
-1. `satp` 从 `0` 变成 `0x8000000000080207` → `entry.S` 已经建好启动页表并打开分页；
-2. 取指 `0xffffffffc02000d6` 触发 TLB 未命中，QEMU 依次经过 `tlb_fill → riscv_cpu_tlb_fill → get_physical_address`；
-3. 三级循环第 0 轮就命中叶子（`i=0`、`pte=0x200000cf`、`ppn=0x80000`），物理地址 `0x802000d6`，
-   与虚拟地址相差 `0xFFFFFFFF40000000`，正好是本工程的 `PHYSICAL_MEMORY_OFFSET`。
+![图 4-8-3 终端 B：断点 1 命中后读 `address`（`0xffffffffc02000d8`）、`access_type`（`MMU_INST_FETCH`）、`mmu_idx`（1），并用 `satp & 0xfffffffffff << 12` 算出根表物理地址 `0x80205000`](./images/gdb_t2_entry.png)
+
+**⑤ 终端 B：继续 → 停在读 PTE 的那一行**
+
+先在 B 里补两个后续断点，再 `continue`：
+
+```text
+(gdb) break cpu_helper.c:337        → Breakpoint 4 at …cpu_helper.c, line 337.
+(gdb) break cpu_helper.c:472        → Breakpoint 5 at …cpu_helper.c, line 472.
+(gdb) c
+Thread 2 "qemu-system-ris" hit Breakpoint 2, get_physical_address (env=env@entry=0x625d74d66e70,
+    physical=physical@entry=0x7e3951ffd2f0, prot=prot@entry=0x7e3951ffd2ec,
+    addr=addr@entry=18446744072637907160, access_type=access_type@entry=2, mmu_idx=mmu_idx@entry=1)
+    at /home/tanggang/qemu-4.1.1/target/riscv/cpu_helper.c:252
+252         target_ulong pte = ldq_phys(cs->as, pte_addr);
+(gdb) p i           → $6 = 0
+(gdb) p ptshift     → $7 = 18
+(gdb) p/x base      → $8 = 0x80205000
+(gdb) p/x idx       → $9 = 0x1ff
+(gdb) p/x pte_addr  → $10 = 0x80205ff8
+```
+
+> 编号说明：gdb 按**设置顺序**编号。截图里 337/472 是 4、5 号，因为 1–3 号在前面已经设过（1 = 条件断点、2 = `:252`）；你自己复现时编号可能不同，**认行号就行**。
+
+解读：Sv39 把虚拟地址切成 **3 个 9 位索引**；走表循环第一次取 `i=0、ptshift=18`，取的是 **VPN[2]**（VA 的 38:30 位）；`idx=0x1ff` 是 512 项页表的最后一项，所以 `pte_addr = base + idx*8 = 0x80205ff8` 正好落在根表末尾。`ldq_phys()` 是通过 QEMU 的 `AddressSpace` 直接从**物理内存**读 8 字节 PTE 的——页表地址本身就是物理地址，这次读取不会再经过 guest MMU（所以断点不会自己套娃）。
+
+![图 4-8-4 终端 B：补上 `:337`/`:472` 两个断点后继续，停在 `:252` 的 `ldq_phys` 读 PTE 处；`i=0`、`ptshift=18`、`base=0x80205000`、`idx=0x1ff`、`pte_addr=0x80205ff8`](./images/gdb_t2_read_pte.png)
+
+**⑥ 终端 B：PTE 的位含义 + 算出物理地址**
+
+```text
+(gdb) p/x pte           → $11 = 0x200000cf
+(gdb) p/x (pte >> 10)   → $12 = 0x80000
+(gdb) c
+Thread 2 "qemu-system-ris" hit Breakpoint 4, get_physical_address (…) at …/cpu_helper.c:337
+337             if ((pte & PTE_R) || ((pte & PTE_X) && mxr)) {
+(gdb) p/x *physical     → $13 = 0x80200000
+```
+
+`0xcf = 1100 1111` 逐位看：**V=1**（有效）、**R=1/W=1/X=1**（可读可写可执行）、**U=0**（超级用户页，S 模式可访问）、**G=0**、**A=1/D=1**（已访问、已脏）；R/W/X 至少一个为 1 → 这是**叶子项**，不再指向下一级页表。`pte >> 10 = 0x80000` 就是物理页号 **PPN**。
+
+上一行（334）执行的是 `*physical = (ppn | (vpn & ((1L << ptshift) - 1))) << PGSHIFT;`：因为**第一级就遇到叶子项**、`ptshift = 18`，所以它是一个 **1 GiB 大页**。大页的物理页号低位要用 VA 的对应位补齐——`ppn` 的低 18 位本来是 0，拼上 VA 的低 18 位后得到 `0x80200`，再左移 12 位就是 `0x80200000`（页基址），页内偏移 `0xd8` 留到最后才加。
+
+![图 4-8-5 终端 B：`p/x pte` 得 `0x200000cf`、`p/x (pte >> 10)` 得 PPN `0x80000`；继续到 `:337` 后 `p/x *physical` 得 `0x80200000`](./images/gdb_t2_physical.png)
+
+**⑦ 终端 B：继续 → 停在填 TLB 的那一行**
+
+```text
+(gdb) c
+Thread 2 "qemu-system-ris" hit Breakpoint 5, riscv_cpu_tlb_fill (…) at …/cpu_helper.c:472
+472         tlb_set_page(cs, address & TARGET_PAGE_MASK, pa & TARGET_PAGE_MASK, prot, mmu_idx, TARGET_PAGE_SIZE);
+(gdb) p/x address                 → $14 = 0xffffffffc02000d8
+(gdb) p/x pa                      → $15 = 0x80200000
+(gdb) p prot                      → $16 = 7
+(gdb) p/x (pa | (address & 0xfff)) → $17 = 0x802000d8
+```
+
+这正是"翻译完成后 MMU 做的两件事"：**拼出物理地址**（`pa | 页内偏移 = 0x802000d8`）并**把 `vaddr → paddr` 写进 TLB**（`tlb_set_page`，`vaddr` 取页对齐的 `0xffffffffc0200000`、`paddr` 取 `0x80200000`、`prot=7 = PAGE_READ|PAGE_WRITE|PAGE_EXEC`、`mmu_idx=1` 说明进的是 S 模式的 TLB）。页内偏移 `0xd8` 不参与翻译，命中时直接拼在物理页基址后面。
+
+![图 4-8-6 终端 B：停在 `:472` 的 `tlb_set_page(...)`；`address=0xffffffffc02000d8`、`pa=0x80200000`、`prot=7`、`pa|offset=0x802000d8`](./images/gdb_t2_tlb_set_page.png)
+
+**⑧ 收尾：B 先删断点再分离，回到终端 C 验证**
+
+```text
+(gdb) delete breakpoints        # 先删断点，避免继续执行时又被 252/337/472 拦住
+(gdb) detach
+(gdb) quit
+```
+
+QEMU 恢复运行，终端 C 立刻停在 `kern_init`：
+
+```text
+Breakpoint 1, kern_init () at kern/init/init.c:30
+30          memset(edata, 0, end - edata);
+(gdb) p/x $pc
+$1 = 0xffffffffc02000d8
+```
+
+`$pc` 与终端 B 里翻译的 `address` 是同一个值——**guest 确实停在我们刚才翻译的那条虚拟地址上**，两层观察闭环。
+
+![图 4-8-7 终端 C：`break kern_init` 命中（`kern/init/init.c:30`），`p/x $pc = 0xffffffffc02000d8`，与终端 B 翻译的地址一致](./images/gdb_t3_kern_init.png)
+
+**表 4-8-1 一次取指翻译的关键停点与数据**
+
+| 停点 | 停在哪 | 关键数据 | 说明 |
+|---|---|---|---|
+| ① | `riscv_cpu_tlb_fill`（`:438`） | `address=0xffffffffc02000d8`、`access_type=MMU_INST_FETCH`、`mmu_idx=1` | 取指触发 TLB miss，进入翻译 |
+| ② | `satp` | `satp=0x8000000000080205` → 根表 `0x80205000` | Sv39，PPN `0x80205` 左移 12 位 |
+| ③ | `:252` `ldq_phys` | `i=0`、`ptshift=18`、`base=0x80205000`、`idx=0x1ff`、`pte_addr=0x80205ff8`、`pte=0x200000cf` | 第一级就命中叶子（1 GiB 大页） |
+| ④ | `:334 → :337` | `ppn=0x80000`、`*physical=0x80200000` | 大页低位用 VA 补齐，得物理页基址 |
+| ⑤ | `:472` `tlb_set_page` | `pa=0x80200000`、`prot=7`、`pa\|offset=0x802000d8` | 拼物理地址 + 写入 S 模式 TLB |
+| ⑥ | guest `kern_init`（`:30`） | `pc=0xffffffffc02000d8` | 回到 guest 侧验证地址一致 |
+
+一句话结论：一条取指 `0xffffffffc02000d8` 经 Sv39 根表 `[511]` 的 1 GiB 叶子（PTE `0x200000cf`、PPN `0x80000`）翻译成物理 `0x802000d8`，随后这条映射被写进 S 模式 TLB，下次取指直接命中、不再走表。
 
 #### 4.8.3 补充观察：用 `-d mmu` 日志交叉验证（我们在指导书基础上加的手段）
 
 gdb 单步能看到寄存器与变量，但看不到"整条翻译流水账"。QEMU 的 `-d mmu` 会把每次 TLB 填充打印出来
-（来源：`target/riscv/cpu_helper.c` 里 `riscv_cpu_tlb_fill()` 的 `qemu_log_mask(CPU_LOG_MMU, …)`），正好用来对照：
+（来源：`target/riscv/cpu_helper.c` 里 `riscv_cpu_tlb_fill()` 的 `qemu_log_mask(CPU_LOG_MMU, …)`），正好用来对照。
+下面这段日志来自 **QEMU 7.0.0** 那台机器（该构建里 `kern_init` 落在 `0xd6`；4.1.1 那台是 `0xd8`，方法完全相同，把 `grep` 的地址换成自己的即可）：
 
 ```bash
 qemu-system-riscv64 -machine virt -nographic -bios default \
@@ -1008,6 +1098,8 @@ for (i = 0; i < levels; i++, ptshift -= ptidxbits) {
 失败则 `raise_mmu_exception → riscv_cpu_do_interrupt`。我们的 1 GiB 大页在第一轮循环就是叶子，
 所以 Sv39 名义三级、实际"一轮出结果"。
 
+**行号对照（两个 QEMU 版本）**：截图环境 **QEMU 4.1.1** → `riscv_cpu_tlb_fill` 入口 `:438`、读 PTE `:252`、物理地址判定 `:334/:337`、`tlb_set_page` 调用 `:472`；本机 **QEMU 7.0.0** → `riscv_cpu_tlb_fill` `:1181`（调用 `get_physical_address` 在 `:1278`，返回后 `:1281`）、`get_physical_address` 函数体首行 `:750`、PTE 检查 `:941`。流程一字不差，只是行号随版本漂移；换版本先 `grep -n "get_physical_address\|ldq_phys\|tlb_set_page" target/riscv/cpu_helper.c` 重新定位。
+
 #### 4.8.5 QEMU 模拟的 TLB 与真实 CPU 的 TLB 的区别
 
 | 维度 | 真实 CPU | QEMU（TCG/softmmu） |
@@ -1036,8 +1128,63 @@ for (i = 0; i < levels; i++, ptshift -= ptidxbits) {
 2. **PTE 的 U 位**：把 `0xcf & ~0x10` 误算成 `0xbf`，反而把 U 置 1，新版 QEMU 严格按规范拒绝 S 模式从 U=1 页取指，又 fault 一次。教训是标志位要逐位核对。
 3. **`attach` 后 QEMU 卡死**：原因是没执行 `handle SIGPIPE nostop noprint`；这一点由大模型定位（把 gdb 输出贴给模型后得到的原因）。
 4. **`sudo gdb` 直接 `attach` 会没有符号**：第一次只敲 `attach`，之后 `bt` 报 `No stack` / `No symbol table is loaded`，`continue` 变成空操作，看起来像"断点不命中"。解决办法是先 `file /opt/qemu/bin/qemu-system-riscv64` 再 `attach`。
-5. **条件断点的必要性**：`get_physical_address()` 每次 TLB miss 都会调用（实测 `-d mmu` 一次启动近 6000 行日志），无条件断点根本没法调试；用 `if addr == 0xffffffffc02000d6` 把断点钉在"必定被取指的地址"上。这也正是指导书"思考"一题的标准答案 —— 不必先调 guest，只要在 QEMU 里打好条件断点、让 ucore 自己跑，就会在合适的位置停下来。
+5. **条件断点的必要性**：`get_physical_address()` / `riscv_cpu_tlb_fill()` 每次 TLB miss 都会调用（实测 `-d mmu` 一次启动近 6000 行日志），无条件断点根本没法调试；用 `if address == 0xffffffffc02000d8 && access_type == 2` 把断点钉在"必定被取指的那一条地址"上（另一台机器上是 `0xd6`）。这也正是指导书"思考"一题的标准答案 —— 不必先调 guest，只要在 QEMU 里打好条件断点、让 ucore 自己跑，就会在合适的位置停下来。
 6. **靠大模型解决的问题**：两个 gdb 分别调什么、`handle SIGPIPE nostop noprint` 的作用、`riscv_cpu_tlb_fill`/`get_physical_address`/`tlb_hit` 三个关键函数的位置、条件断点与"有符号/无符号"的排查思路。
+7. **"假命中"与 `access_type`**：`attach` 之后 gdb 自己读写 guest 内存（`x`/`p`/stub 取指）也会触发地址翻译，那些请求是 `access_type=0`、`priv=3`、`satp=0`；只写 `address ==` 会被它们误导，加上 `&& access_type == 2` 才只盯**取指**那一次。
+8. **分离前先删断点**：`detach` 会让 QEMU 继续跑，若 `:252/:337/:472` 的断点还留着，会反复停在同一趟翻译里；所以 B 里先 `delete breakpoints` 再 `detach`。
+
+#### 4.8.7 复现步骤与截图清单
+
+**（1）三个终端，从头到尾只有这几条命令**
+
+```bash
+# 终端 A：起 QEMU（-s -S）
+cd ~/lab2/code                                  # 本仓库对应 /mnt/d/桌面/os_lab/code
+make debug QEMU="qemu-system-riscv64 -kernel bin/ucore.img"
+
+# 终端 B：attach QEMU，下"地址 + 取指"双条件断点
+pgrep -f 'qemu-system-riscv64 -machine'        # 记 PID
+sudo gdb
+handle SIGPIPE nostop noprint
+set pagination off
+set confirm off
+break riscv_cpu_tlb_fill if address == 0xffffffffc02000d8 && access_type == 2
+break cpu_helper.c:252                          # 读 PTE
+break cpu_helper.c:337                          # 物理地址算完之后的 R/X 判定
+break cpu_helper.c:472                          # tlb_set_page 调用
+continue
+
+# 终端 C：连 stub、给 guest 下断点、点火
+make gdb                                        # 或 /opt/riscv/bin/riscv64-unknown-elf-gdb
+file bin/kernel
+set arch riscv:rv64
+target remote localhost:1234
+break kern_init
+c
+```
+
+> 断点编号按设置顺序变化：截图里 `:337`/`:472` 是 4、5 号（前面还设过 1–3 号），复现时**认行号**即可。
+
+之后回到终端 B 依次 `p/x address`、`p access_type`、`p mmu_idx`、`p/x ((RISCVCPU *)cs)->env.satp` → `c` → `p i`、`p ptshift`、`p/x base`、`p/x idx`、`p/x pte_addr` → `c`（看 `p/x pte`、`p/x *physical`）→ `c`（看 `p/x pa`、`p prot`）→ `delete breakpoints`、`detach`；最后在终端 C 里 `p/x $pc`。
+
+**（2）截图清单（`report/images/`，全部取自真实会话）**
+
+| 图 | 文件 | 终端 | 该屏的关键内容 |
+|---|---|---|---|
+| 4-8-1 | `gdb_t2_setup_breakpoint.png` | B | `handle SIGPIPE nostop noprint`、`set pagination/confirm off`、双条件断点落在 `cpu_helper.c:438`、`continue` |
+| 4-8-2 | `gdb_t3_connect_bp.png` | C | `file`/`set arch`/`target remote`、`break kern_init → 0xffffffffc02000d8`（`init.c:30`）、`c` |
+| 4-8-3 | `gdb_t2_entry.png` | B | 断点 1 命中：`p/x address`、`p access_type`、`p mmu_idx`、`satp` 与根表 `0x80205000` |
+| 4-8-4 | `gdb_t2_read_pte.png` | B | 停在 `:252`：`i=0`、`ptshift=18`、`base=0x80205000`、`idx=0x1ff`、`pte_addr=0x80205ff8` |
+| 4-8-5 | `gdb_t2_physical.png` | B | `pte=0x200000cf`、`pte>>10=0x80000`、`:337` 处 `*physical=0x80200000` |
+| 4-8-6 | `gdb_t2_tlb_set_page.png` | B | 停在 `:472`：`address`、`pa=0x80200000`、`prot=7`、`pa\|offset=0x802000d8` |
+| 4-8-7 | `gdb_t3_kern_init.png` | C | `Breakpoint 1, kern_init () at kern/init/init.c:30`、`p/x $pc = 0xffffffffc02000d8` |
+
+**（3）复现时容易卡住的四个点**
+
+1. `attach` 报 `Permission denied`：Ubuntu 的 `kernel.yama.ptrace_scope=1` 只允许 attach 子进程 → 用 `sudo gdb`，或临时 `sudo sysctl kernel.yama.ptrace_scope=0`。
+2. 一 `continue` QEMU 就退出：漏了 `handle SIGPIPE nostop noprint`。
+3. 断点"命中了但不是我们要的那次"：条件漏写 `&& access_type == 2`，被 gdbstub 自己读写内存的翻译（`access_type=0`、`priv=3`、`satp=0`）骗到。
+4. 端口被占 / 上一轮残留：`pkill -9 -f qemu-system-riscv64` 后重来；stub 端口若不是 1234，终端 C 的 `target remote` 与终端 A 的 `-gdb tcp::` 要同时改。
 
 ---
 
@@ -1053,9 +1200,12 @@ for (i = 0; i < levels; i++, ptshift -= ptidxbits) {
 |②|切换后（Best-Fit）|`images/make_qemu_best_fit.png`|`memory management: best_fit_pmm_manager` + 上面几行|
 |③|注入测试|`images/injected_tests.png`|`[Test 1] Page Init: PASS` + `[Test 2] Best-Fit: PASS`|
 |④|make grade|`images/test_result.png`|`check page init: OK` + `check best fit: OK` + `Total Score: 20/20`|
+|⑤|分支任务：终端 B 条件断点与入口命中|`images/gdb_t2_setup_breakpoint.png`、`images/gdb_t2_entry.png`|`break riscv_cpu_tlb_fill if address == 0xffffffffc02000d8 && access_type == 2`（`:438`）、`access_type=MMU_INST_FETCH`、`mmu_idx=1`、`satp=0x8000000000080205` → 根表 `0x80205000`|
+|⑥|分支任务：走表三停点（读 PTE / 算物理地址 / 填 TLB）|`images/gdb_t2_read_pte.png`、`images/gdb_t2_physical.png`、`images/gdb_t2_tlb_set_page.png`|`i=0`、`ptshift=18`、`base=0x80205000`、`idx=0x1ff`、`pte_addr=0x80205ff8`、`pte=0x200000cf`、`*physical=0x80200000`、`pa\|offset=0x802000d8`、`prot=7`|
+|⑦|分支任务：guest 侧命中 `kern_init`|`images/gdb_t3_connect_bp.png`、`images/gdb_t3_kern_init.png`|`break kern_init → 0xffffffffc02000d8`（`init.c:30`）、`p/x $pc = 0xffffffffc02000d8`|
 
-> 分支任务（4.8）不贴截图：它的证据是 `-d int`、`-d mmu` 的原始日志与双 gdb 会话记录，
-> 已经以代码块形式逐字贴在第 4.8 节里（日志比截图更可核对，也避免终端截图糊成一片）。
+> 分支任务（4.8）的 7 张图是**手工三终端会话**（终端 A 起 QEMU、终端 B 调 QEMU 源码、终端 C 调 ucore）的真实截图，
+> 取自 QEMU 4.1.1 环境；停点顺序与命令见 4.8.2、复现稿见 4.8.7。`-d int`、`-d mmu` 的原始日志仍逐字贴在第 4.8 节。
 
 **唐港（2412386）提供的 4 张截图：**
 
@@ -1066,6 +1216,22 @@ for (i = 0; i < levels; i++, ptshift -= ptidxbits) {
 ![注入测试：Test 1 Page Init 与 Test 2 Best-Fit 均为 PASS](./images/injected_tests.png)
 
 ![make grade：check page init OK、check best fit OK、Total Score 20/20](./images/test_result.png)
+
+**分支任务（4.8）的三终端调试过程截图（7 张，按停点顺序）：**
+
+![图 4-8-1 终端 B：`handle SIGPIPE`、`set pagination/confirm off`，双条件断点落在 `cpu_helper.c:438`，`continue`](./images/gdb_t2_setup_breakpoint.png)
+
+![图 4-8-2 终端 C：`file`/`set arch`/`target remote`，`break kern_init` 得 `0xffffffffc02000d8`（`init.c:30`），`c` 放行 vCPU](./images/gdb_t3_connect_bp.png)
+
+![图 4-8-3 终端 B：断点 1 命中，`address`/`access_type=MMU_INST_FETCH`/`mmu_idx=1`，由 `satp` 算出根表 `0x80205000`](./images/gdb_t2_entry.png)
+
+![图 4-8-4 终端 B：停在 `:252` 读 PTE，`i=0`/`ptshift=18`/`base=0x80205000`/`idx=0x1ff`/`pte_addr=0x80205ff8`](./images/gdb_t2_read_pte.png)
+
+![图 4-8-5 终端 B：`pte=0x200000cf`、`pte>>10=0x80000`，`:337` 处 `*physical=0x80200000`](./images/gdb_t2_physical.png)
+
+![图 4-8-6 终端 B：停在 `:472` 的 `tlb_set_page`，`pa=0x80200000`、`prot=7`、`pa|offset=0x802000d8`](./images/gdb_t2_tlb_set_page.png)
+
+![图 4-8-7 终端 C：`Breakpoint 1, kern_init () at kern/init/init.c:30`，`p/x $pc = 0xffffffffc02000d8`](./images/gdb_t3_kern_init.png)
 
 ### 5.2 结果说明
 
