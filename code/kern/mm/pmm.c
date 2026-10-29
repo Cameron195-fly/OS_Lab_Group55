@@ -82,6 +82,68 @@ size_t nr_free_pages(void) {
 }
 
 //lab2 请补充你在lab2中的代码
+//lab2 function1 2413541
+/* page_init - 物理内存探测 + Page 描述符布局 + 把空闲页交给 pmm_manager
+ *
+ * 初始化后的物理内存布局：
+ *   [0x80000000, 0x80200000)   OpenSBI，保留
+ *   [0x80200000, end)          内核镜像（代码/数据/bss），保留
+ *   [end, pages)               补齐到页边界的空隙，保留
+ *   [pages, pages_end)         Page 描述符数组，保留
+ *   [free_start, free_end)     交给 pmm_manager 的完整空闲页
+ */
+static void page_init(void) {
+    extern char end[];
+
+    uint64_t mem_base = get_memory_base();
+    uint64_t mem_size = get_memory_size();
+    if (mem_base == 0 || mem_size == 0) {
+        panic("page_init: invalid physical memory info from DTB (base=0x%lx, size=0x%lx)",
+              (unsigned long)mem_base, (unsigned long)mem_size);
+    }
+
+    uint64_t mem_end = mem_base + mem_size;
+    uint64_t manageable_end = (uint64_t)KERNTOP - PHYSICAL_MEMORY_OFFSET;
+    if (mem_end > manageable_end) {
+        mem_end = manageable_end;
+    }
+    if (mem_end <= mem_base) {
+        panic("page_init: empty manageable physical memory range");
+    }
+
+    va_pa_offset = PHYSICAL_MEMORY_OFFSET;
+
+    npage = PPN(mem_end);
+    if (npage <= nbase) {
+        panic("page_init: no manageable physical page (nbase=0x%lx, npage=0x%lx)",
+              (unsigned long)nbase, (unsigned long)npage);
+    }
+
+    pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
+    uintptr_t pages_end = (uintptr_t)pages + (npage - nbase) * sizeof(struct Page);
+
+    uintptr_t free_start_pa = ROUNDUP(PADDR(pages_end), PGSIZE);
+    uintptr_t free_end_pa = ROUNDDOWN((uintptr_t)mem_end, PGSIZE);
+
+    struct Page *p = pages;
+    for (size_t i = 0; i < npage - nbase; i++, p++) {
+        p->flags = 0;
+        p->property = 0;
+        set_page_ref(p, 0);
+        SetPageReserved(p);
+    }
+
+    cprintf("physical memory map:\n");
+    cprintf("  memory: 0x%016lx, [0x%016lx, 0x%016lx].\n",
+            (unsigned long)(mem_end - mem_base), (unsigned long)mem_base,
+            (unsigned long)(mem_end - 1));
+
+    if (free_start_pa < free_end_pa) {
+        init_memmap(pa2page(free_start_pa), (free_end_pa - free_start_pa) / PGSIZE);
+    } else {
+        cprintf("page_init: no complete free page after the page descriptor array\n");
+    }
+}
 
 /* pmm_init - initialize the physical memory management */
 void pmm_init(void) {
