@@ -6,10 +6,12 @@
 #include <memlayout.h>
 #include <mmu.h>
 #include <riscv.h>
+#include <sbi.h>
 #include <stdio.h>
 #include <trap.h>
 
 #define TICK_NUM 100
+#define SHUTDOWN_AFTER 10
 
 static void print_ticks() {
     cprintf("%d ticks\n", TICK_NUM);
@@ -80,8 +82,63 @@ void print_regs(struct pushregs *gpr) {
     cprintf("  t6       0x%08x\n", gpr->t6);
 }
 
-//lab3 function2 YOUR CODE
+//lab3 function2 2412386
 
+/* insn_length - 返回 epc 处指令的字节长度
+ * RISC-V 中低 2 位为 0b11 表示 32 位指令，否则是 16 位压缩指令 */
+static size_t insn_length(uintptr_t epc) {
+    uint16_t insn = *(const uint16_t *)epc;
+    return ((insn & 0x3) == 0x3) ? 4 : 2;
+}
+
+/* interrupt_handler - 处理中断（scause 最高位为 1） */
+void interrupt_handler(struct trapframe *tf) {
+    /* 先清除 bit63 的中断标志，剩下的才是原因码 */
+    intptr_t cause = (intptr_t)((tf->cause << 1) >> 1);
+
+    switch (cause) {
+        case IRQ_S_TIMER:
+            /* 先设置下一次时钟事件，再计数；否则只能收到一次时钟中断 */
+            clock_set_next_event();
+            ticks++;
+            if (ticks % TICK_NUM == 0) {
+                print_ticks();
+                /* 统计信息累计输出 SHUTDOWN_AFTER 次后关机 */
+                if (ticks >= (size_t)SHUTDOWN_AFTER * TICK_NUM) {
+                    sbi_shutdown();
+                }
+            }
+            break;
+        case IRQ_S_SOFT:
+            cprintf("Supervisor software interrupt\n");
+            break;
+        case IRQ_S_EXT:
+            cprintf("Supervisor external interrupt\n");
+            break;
+        default:
+            cprintf("Unknown interrupt: cause %d\n", (int)cause);
+            print_trapframe(tf);
+            break;
+    }
+}
+
+/* exception_handler - 处理同步异常（scause 最高位为 0） */
+void exception_handler(struct trapframe *tf) {
+    switch (tf->cause) {
+        case CAUSE_ILLEGAL_INSTRUCTION:
+            cprintf("Illegal instruction at 0x%016lx\n", tf->epc);
+            /* 按真实指令长度推进 epc，避免返回后重复触发同一异常 */
+            tf->epc += insn_length(tf->epc);
+            break;
+        case CAUSE_BREAKPOINT:
+            cprintf("Breakpoint at 0x%016lx\n", tf->epc);
+            tf->epc += insn_length(tf->epc);
+            break;
+        default:
+            print_trapframe(tf);
+            break;
+    }
+}
 
 static inline void trap_dispatch(struct trapframe *tf) {
     if ((intptr_t)tf->cause < 0) {
