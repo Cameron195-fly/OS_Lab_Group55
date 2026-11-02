@@ -35,7 +35,7 @@ static void check_alloc_page(void);
 
 // init_pmm_manager - initialize a pmm_manager instance
 static void init_pmm_manager(void) {
-    pmm_manager = &best_fit_pmm_manager;   // lab2 function2-2: 切换为 Best-Fit
+    pmm_manager = &best_fit_pmm_manager;   // lab2 function2-2 2412386: 切换为 Best-Fit
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }
