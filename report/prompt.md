@@ -163,11 +163,11 @@ Error: unknown CSR `sbadaddr'
 ### 验证
 
 ```text
-Breakpoint at 0xffffffffc02019a8
+Breakpoint at 0xffffffffc0201a28
 [Test 1] Trap entry and breakpoint return: PASS (35/35)
 ```
 
-`ebreak` 是 2 字节 `c.ebreak`，模块二按指令长度推进 `epc` 后 `sret` 正常返回；该地址随构建/工具链变化。
+`ebreak` 是 2 字节 `c.ebreak`，模块二按指令长度推进 `epc` 后 `sret` 正常返回；该地址随构建/工具链变化，A 早期草稿的 `0xffffffffc02019a8` 与最终构建的 `0xffffffffc0201a28` 的差异见 P3-3。
 
 ---
 
@@ -262,7 +262,7 @@ void exception_handler(struct trapframe *tf);
 **Case 3** —— 外部中断：输出对应提示，正常返回。
 
 **Case 4** —— 其他中断：输出 `Unknown interrupt: cause %d`，`%d` 为去掉最高位后的原因码
-（如 `0x800000000000000f` 应输出 15），再调用 `print_trapframe(tf)`。
+（如原因码 15 输出 15；若 bit63 置位先清掉），再调用 `print_trapframe(tf)`。
 
 **Requirements**: 判断前必须先清除最高位，不能用原始 `tf->cause` 直接分支；不得修改 `tf->epc`。
 
@@ -298,7 +298,7 @@ void exception_handler(struct trapframe *tf);
 | Case 3 外部中断 | "输出对应提示" | 输出 `Supervisor external interrupt`；`grade.sh` 不检查该行，不影响评分 |
 | 关机判定 | "统计输出累计达到 `SHUTDOWN_AFTER` 次（即 `ticks` 达到 `SHUTDOWN_AFTER × TICK_NUM`）" | 直接判 `ticks >= SHUTDOWN_AFTER * TICK_NUM`，不额外引入静态计数器，少一个状态 |
 
-**本次没有出现运行期 bug**：按上面的提示词一次生成，`make` 无警告，`make grade`
+**模块二没有出现运行期 bug**：按上面的提示词一次生成，`make` 无警告，`make grade`
 直接 `Total Score: 100/100`。原因是提示词把历史上最容易踩的 6 个坑写成了硬约束，
 生成结果没有机会犯：
 
@@ -309,8 +309,8 @@ void exception_handler(struct trapframe *tf);
 5. handler 写成 `static` → `tools/test_lab3.c` 的 `extern` 引用链接失败；
 6. 漏 `#include <sbi.h>` 或漏定义 `SHUTDOWN_AFTER` → `-Werror` 下编译失败。
 
-> 说明：以上是"提示词在设计阶段主动规避"的清单，不是本次实际发生的 bug；
-> 报告"bug 与修正"栏按实际情况填写"一次通过，无运行期 bug"。
+> 说明：以上是模块二"提示词在设计阶段主动规避"的清单，不是模块二实际发生的运行期 bug；
+> 模块一实际修掉的 `sp`/`a0`/`sbadaddr` 见 P1，报告按实际情况记录。
 
 ---
 
@@ -409,7 +409,7 @@ qemu-system-riscv64 -machine virt -nographic -bios default \
 并给出不污染仓库的手工执行步骤。
 
 [RELY]
-// Makefile 的 grade 目标是：复制 code/ 到 /tmp/lab3_grade -> python3 tools/inject.py
+// Makefile 的 grade 目标是：复制 code/ 到 /tmp/lab3_grade -> python3 tools/inject.py /tmp/lab3_grade
 //   -> sh tools/grade.sh
 // inject.py 做三件事：
 //   1) 把 tools/test_lab3.c/.h/test_lab3_context.S 复制到 kern/test/
@@ -423,8 +423,8 @@ qemu-system-riscv64 -machine virt -nographic -bios default \
 - 只在 /tmp 副本中注入。
 
 [SPECIFICATION]
-1. 复制工作副本：`cp -r code /tmp/lab3_shot && cd /tmp/lab3_shot`；
-2. 执行 `python3 tools/inject.py`；
+1. 在仓库根目录复制工作副本：`cp -r code /tmp/lab3_shot && cd /tmp/lab3_shot`；
+2. 执行 `python3 tools/inject.py .`；
 3. `make clean && make DEFS+=-DGRADE_LAB3_CONTEXT`，再限时运行 QEMU；
 4. 验收：输出包含 `Breakpoint at 0x...` 与 `[Test 1] ... PASS (35/35)`；
    原仓库 `git status` 不受影响。
@@ -451,7 +451,7 @@ Breakpoint at 0xffffffffc0201a28
 
 | 项目 | 内容 |
 |---|---|
-| 目标 | 保证报告中所有地址/计数/分值来自同一构建的真实输出 |
+| 目标 | 保证报告中所有地址/计数/分值来自同一台机器、同一套工具链的最终一轮输出；注入测试会改变内核大小，地址以对应场景为准 |
 | 约束 | 不凭记忆填写；截图与日志必须可追溯到具体命令 |
 | 验收 | 报告中的 `0xffffffffc0201a28`、`0xffffffffc02019d8`、`ticks=200`、`100/100` 与截图逐字一致 |
 
@@ -459,7 +459,7 @@ Breakpoint at 0xffffffffc0201a28
 
 ```text
 [PROMPT]
-**任务**：把 Lab3 的构建/运行/测试输出整理成报告用截图与数据表，要求同一构建、可追溯。
+**任务**：把 Lab3 的构建/运行/测试输出整理成报告用截图与数据表，要求同一台机器/同一套工具链、按场景分别构建、可追溯。
 
 [RELY]
 // 构建：make clean && make
@@ -475,7 +475,7 @@ Breakpoint at 0xffffffffc0201a28
 1. 每个场景单独保存原始文本输出，记录命令与时间；
 2. 报告中的每个数字都能在对应输出中检索到；
 3. 图片命名固定为 01–07，正文引用与文件名一一对应；
-4. 交叉核对：Test 1 地址、Test 2 两个 trapframe 的 cause、Test 3 的 ticks 与总分。
+4. 交叉核对：Test 1 地址、Test 2 的 cause 0x0f/0x14（截图未覆盖的部分以日志补全）、Test 3 的 ticks 与总分。
 ```
 
 #### 迭代记录
@@ -483,8 +483,7 @@ Breakpoint at 0xffffffffc0201a28
 **v1：先写报告后补截图。** 发现 A 草稿里的 Test 1 地址是 `0xffffffffc02019a8`，
 与最终构建的 `0xffffffffc0201a28` 不一致。原因是草稿来自更早的一次编译。
 
-**v2：统一以最终构建为准。** 以同一次 `make clean` 之后的输出为准，重新生成 7 张截图，
-并把合并报告中的地址统一为 `0xffffffffc0201a28`；正文增加"该地址随构建/工具链变化"的说明。
+**v2：统一以最终环境为准。** 以同一台机器、同一套工具链的最终一轮输出为准，按场景分别构建并生成 7 张截图；把合并报告中的地址统一为 `0xffffffffc0201a28`，正文注明“地址随构建/工具链变化”。Test 2 的 `cause 0x14` 若截图未覆盖，以测试日志补全并在图注说明。
 
 ---
 
@@ -572,6 +571,9 @@ Lab3 依赖 Lab2 的物理内存管理，需要把 Best-Fit 回填到 Lab3 骨�
 **直接复用 `lab2` 分支上已经验证过的实现**（`git show lab2:code/kern/mm/best_fit_pmm.c`），
 而不是重新生成。为保证可复现，下面保留 Lab2 阶段的最终提示词：
 
+> 说明：以下为 Lab2 原文；Lab3 骨架的标记是 `//lab2 请补充你在lab2中的代码`，且
+> `best_fit_pmm_manager` 在 Lab3 中需要新增（不是修改），具体见 4.3.2 与下文"适配点"。
+
 ```text
 [PROMPT]
 请修改 kern/mm/best_fit_pmm.c 文件，将当前 //lab2 function2-2 YOUR CODE 下方的内部状态
@@ -654,7 +656,7 @@ best_fit_pmm_manager 注册结构体。
 | 模块 | Spec 摘要 | 最终提示词 | 迭代记录 |
 |---|---|---|---|
 | 模块一 | 有（输入/输出/不变量/约束/验收） | 有（四段式，含 36 项偏移） | 有（`sp` 提前恢复、`a0` 未赋值、`sbadaddr`） |
-| 模块二 | 有（分支级 Pre/Post） | 有（四段式，含 6 个坑） | 有（设计期规避清单 + 一次通过说明） |
+| 模块二 | 有（分支级 Pre/Post） | 有（四段式，含 6 个坑） | 有（设计期规避清单 + 模块二一次通过说明） |
 | `page_init` | 有 | 有 | 有（`PHYSICAL_MEMORY_END`、边界检查） |
 | Best-Fit | 有 | 有 | 有（回填适配点） |
 | 环境/验证 | 有（P3-1/2/3） | 有 | 有（loader/FDT、注入、数据一致性） |
@@ -663,7 +665,7 @@ best_fit_pmm_manager 注册结构体。
 
 1. **提示词的有效性来自"RELY 真实 + GUARANTEE 硬 + SPECIFICATION 有序"**：
    三份实现提示词都没有出现"AI 虚构接口"或"输出格式不符"的问题。
-2. **真正的 bug 集中在环境而非代码**：`-device loader` 不注入 FDT 是本轮唯一导致
-   0 分的问题，靠"串口是否有输出"这一最小证据快速定位，而不是反复改内核。
-3. **报告数据必须与最终构建绑定**：截图、地址、分值来自同一次 `make grade`，
-   并在合并阶段统一核对，避免甲/乙草稿与丙截图之间出现版本差异。
+2. **运行期问题主要来自环境**：`-device loader` 不注入 FDT 是本轮最严重的问题，靠"串口是否有输出"
+   这一最小证据快速定位；代码侧的迭代问题（`sp`、`a0`、`sbadaddr`）见 P1。
+3. **报告数据必须与最终环境绑定**：截图、地址、分值来自同一台机器/同一套工具链的最终一轮输出；
+   各测试场景分别构建，地址以对应场景为准，并在合并阶段统一核对，避免甲/乙草稿与丙截图之间出现版本差异。

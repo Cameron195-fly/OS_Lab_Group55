@@ -266,7 +266,7 @@ __alltraps:
 2. **`x2(sp)` 为什么特殊**：`SAVE_ALL` 先把原 `sp` 写进 `sscratch`，再 `addi sp, sp, -36*REGBYTES` 开帧；最后用 `csrrw s0, sscratch, x0` 把原 `sp` 取回并存到第 2 项。因此第 2 项存的是“开栈之前”的 `sp`，等于恢复后的 `sp + 36*REGBYTES`。`RESTORE_ALL` 用 `addi sp, sp, 36*REGBYTES` 与它等价，而且不必在恢复过程中提前改基址；如果像其它寄存器一样先 `LOAD sp, 2*REGBYTES(sp)`，后面的 `LOAD` 基址全错，Test 1 会失败。
 3. **`sscratch` 的语义**：`SAVE_ALL` 末尾把 `sscratch` 清 0，沿用 `idt_init()` 的约定——内核态运行期间 `sscratch` 为 0，若内核里再次发生 Trap，入口可据此判断不是从用户态进来的。本实验全程内核态，`RESTORE_ALL` 不恢复 `sscratch`，返回后仍为 0，与约定一致；用户态切换是后续实验的内容。
 4. **`a0` 与调用约定**：`SAVE_ALL` 之后 `sp` 正好是 Trap frame 首地址，用 `addi a0, sp, 0` 放进第一个参数。`jal trap` 会写 `ra`，但 `ra` 已在第 1 项保存过，`RESTORE_ALL` 会恢复；`trap()` 作为被调用者遵守调用约定，返回后 `sp` 不变，可以直接落入 `__trapret`。
-5. **`sret` 的返回语义**：`sret` 做三件事——`pc <- sepc`；特权级 <- `sstatus.SPP`；`sstatus.SIE <- sstatus.SPIE`。所以 `RESTORE_ALL` 必须把 `sstatus` 原样写回，不能只恢复 `sepc`。本实验 `SPP=1`，返回 S 模式；不要按指导书的 U 模式文字去清 `SPP`。
+5. **`sret` 的返回语义**：`sret` 做三件事——`pc <- sepc`；特权级 <- `sstatus.SPP`；`sstatus.SIE <- sstatus.SPIE`；同时把 `SPIE` 置 1、`SPP` 清 0，为下一次 Trap 做准备。所以 `RESTORE_ALL` 必须把 `sstatus` 原样写回，不能只恢复 `sepc`。本实验 `SPP=1`，返回 S 模式；不要按指导书的 U 模式文字去清 `SPP`。
 6. **对齐**：`__alltraps` 必须 4 字节对齐（`stvec` 的低两位是模式位），原骨架的 `.align(2)` 不动。汇编器会生成一个 `R_RISCV_ALIGN` 重定位，链接时由 relaxation 调整到 4 字节边界。
 7. **工具链兼容**：`SAVE_ALL` 里的 `csrr s3, sbadaddr` 在新 binutils 上会报 `unknown CSR 'sbadaddr'`；用 `#define sbadaddr stval` 把旧别名映射到标准名，CSR 编号都是 `0x143`，不改变 `SAVE_ALL` 的宏体逻辑。
 
@@ -372,7 +372,7 @@ default:
    `epc += 4` 会让 2 字节异常指令跳过下一条合法指令，测试 1 立刻失败。实现读取 `epc`
    处 2 字节编码，低 2 位 `0b11` 为 32 位指令（+4），否则 +2。
 5. **兜底分支是硬要求**：未知中断输出 `Unknown interrupt: cause %d`（原因码已去掉最高位，
-   例如 `0x800000000000000f` 输出 15）并调用 `print_trapframe(tf)`；未知异常只调用
+   例如 bit63 置位、低 63 位为 15 时输出 15）并调用 `print_trapframe(tf)`；未知异常只调用
    `print_trapframe(tf)`，且**不修改** `epc`——本实验不要求恢复其它异常。
 6. **两个 handler 不能声明为 `static`**：`tools/test_lab3.c` 用 `extern` 直接调用它们做
    评分（软件中断/未知中断/未知异常的兜底路径），`static` 会导致链接期找不到符号。
@@ -537,7 +537,7 @@ Best-Fit 复用 First-Fit（`default_pmm.c`）的全部内部状态约定：
    保持原样，不写入个人学号。
 2. **学号只出现在注释里**：不影响任何逻辑，`-Wall -Werror` 下不会产生告警。
 3. **`init.c` 未修改**：旧版资料中的 `LAB3: CHALLENGE 1` / `lab3_switch_test()` 是遗留内容，
-   今年不要求，保持注释原状；本次也未实现 Challenge。
+   今年不要求；当前骨架已没有这段注释，本次也未实现 Challenge。
 4. **`tools/` 与 `Makefile` 未修改**：`grade.sh`、`inject.py`、`test_lab3*`、
    `PROJ`、`GCCPREFIX` 均为仓库原值，仅由 `make grade` 在临时副本中注入测试。
 
@@ -611,7 +611,7 @@ Breakpoint at 0xffffffffc0201a28
 [Test 1] Trap entry and breakpoint return: PASS (35/35)
 ```
 
-结论：`__alltraps`/`RESTORE_ALL`（成员 A）保存并恢复了 35 项上下文；断点异常被
+结论：`__alltraps`/`RESTORE_ALL`（成员 A）保存并恢复了被检查的 28 个通用寄存器，Test 1 得 35/35；断点异常被
 `exception_handler` 识别，按 `c.ebreak` 的 2 字节长度推进 `epc` 后 `sret` 正常返回，
 没有重复触发断点。
 
@@ -634,7 +634,7 @@ Unknown interrupt: cause 15
 
 - 4 字节自定义非法指令 `.word 0x7b` 触发异常，打印地址后 `epc += 4`，返回后越过该指令；
 - 软件中断路径输出 `Supervisor software interrupt`；
-- `cause = 0x800000000000000f` 去掉最高位后为 15，走未知中断分支，输出
+- `test_lab3_handler_fallbacks()` 直接把 `tf.cause` 设为 15 调用 `interrupt_handler`，走未知中断分支，输出
   `Unknown interrupt: cause 15` 并打印 Trap frame（其中 `cause 0x0000000f`）；
 - 未知异常（cause 20）走 `print_trapframe` 兜底，输出 `cause 0x00000014`，且不修改 `epc`。
 
@@ -644,7 +644,7 @@ Unknown interrupt: cause 15
 
 ![Test 2 兜底](./images/05_test2_fallback.png)
 
-*图 5：Test 2 — 两段 Trap frame（`cause 0x0f` / `cause 0x14`）与 `PASS (25/25)`*
+*图 5：Test 2（续）— 未知中断的 Trap frame（`cause 0x0f`）；`cause 0x14` 的兜底输出见测试日志，PASS 见图 7*
 
 #### Test 3：时钟中断续期与重复返回（40 分）
 
@@ -677,8 +677,7 @@ Total Score: 100/100
 | Test 3 时钟续期 | 40 | PASS |
 | **合计** | **100** | **100/100** |
 
-本次两项实现均为一次通过，未出现运行期 bug；提示词在设计阶段已把这几个高频坑写死
-（详见 P2 的迭代记录）。
+最终版本无运行期 bug；迭代中实际修掉的 `sp`、`a0`、`sbadaddr` 等问题见 4.1.5/P1，模块二的设计期规避清单见 P2。
 
 ![make grade](./images/07_make_grade.png)
 
@@ -697,13 +696,13 @@ Total Score: 100/100
 | `ticks++` 被写进 `if` | `ticks % TICK_NUM == 0` 内自增 | `ticks` 永远停在 0，无输出也不关机 | 实测 `ticks=200` 且按 `SHUTDOWN_AFTER × TICK_NUM` 正常关机 |
 | `epc += 4` 固定偏移 | `ebreak` 被汇编为 2 字节 `c.ebreak` | 跳过下一条合法指令，Test 1 失败 | 按低 2 位判定长度：`Breakpoint at 0xffffffffc0201a28` 后正确返回，重复断点未发生 |
 | 4 字节非法指令 | Test 2 注入 `.word 0x7b` | `epc += 4` 越过该指令 | `Illegal instruction at 0xffffffffc02019d8` 后正常返回，`PASS (25/25)` |
-| 未知中断 | `cause = 0x800000000000000f` | 输出去掉最高位后的 15，并打印 Trap frame | `Unknown interrupt: cause 15`，Trap frame 中 `cause 0x0000000f` |
+| 未知中断 | 测试直接把 `tf.cause` 设为 15 | 输出去掉最高位后的 15，并打印 Trap frame | `Unknown interrupt: cause 15`，Trap frame 中 `cause 0x0000000f` |
 | 未知同步异常 | `cause = 20` | 只 `print_trapframe(tf)`，不修改 `epc` | 第二个 Trap frame 打印 `cause 0x00000014`，随后测试继续 |
-| `sp` 过早恢复 | `RESTORE_ALL` 先 `LOAD sp, 2*REGBYTES(sp)` | 后续 `LOAD` 基址错位，寄存器检查失败 | 实现改为最后 `addi sp, sp, 36*REGBYTES`，Test 1 的 35 项检查全通过 |
+| `sp` 过早恢复 | `RESTORE_ALL` 先 `LOAD sp, 2*REGBYTES(sp)` | 后续 `LOAD` 基址错位，寄存器检查失败 | 实现改为最后 `addi sp, sp, 36*REGBYTES`，Test 1 的 28 个被检查寄存器全部原值（35/35 分） |
 | `a0` 未设为 tf | `__alltraps` 漏 `addi a0, sp, 0` | `trap()` 收到野指针，打印乱码或崩溃 | 已设置 `a0 = sp`，`print_trapframe` 输出地址稳定在 `0xffffffffc0205eb0` |
-| 到点关机不等于提前关机 | `SHUTDOWN_AFTER = 10` | 需大于 Test 3 的 200 次 tick，否则中途退出 | 10×1000 次 tick 后关机，Test 3 的 200 次远未触发 |
+| 到点关机不等于提前关机 | `SHUTDOWN_AFTER = 10` | 需大于 Test 3 的 200 次 tick，否则中途退出 | 10×100 = 1000 次 tick 后关机，Test 3 的 200 次远未触发 |
 
-其中 Test 2 的两段 Trap frame 分别对应"未知中断"和"未知异常"两条兜底分支：
+其中 Test 2 的两段 Trap frame 分别对应"未知中断"和"未知异常"两条兜底分支（图 5 只截到第一段；第二段与 PASS 见 `make grade` 输出/图 7）：
 
 ```text
 Unknown interrupt: cause 15
@@ -720,7 +719,7 @@ trapframe at 0xffffffffc0205eb0
 
 ### 5.6 截图与观测点对照
 
-七张截图均来自同一次构建（`make clean` 后依次执行），地址与计数可直接互相印证。
+七张截图来自同一台机器和同一套工具链，按顺序分别构建：02 是普通 `make qemu`，03–06 是注入对应测试后的构建（05 与 04 同一次）；注入会改变内核大小，因此 `etext`/`edata` 略有不同，地址与计数仍可与测试输出互相印证。
 
 | 图片 | 命令/场景 | 关键观测点 |
 |---|---|---|
@@ -728,7 +727,7 @@ trapframe at 0xffffffffc0205eb0
 | `02_make_qemu.png` | `make qemu` | `memory management: best_fit_pmm_manager`、`check_alloc_page() succeeded!`、连续 10 行 `100 ticks` |
 | `03_test1_breakpoint.png` | Test 1 | `Breakpoint at 0xffffffffc0201a28`、`PASS (35/35)` |
 | `04_test2_illegal.png` | Test 2 | `Illegal instruction at 0xffffffffc02019d8`、`Supervisor software interrupt`、`Unknown interrupt: cause 15` |
-| `05_test2_fallback.png` | Test 2（续） | 两次 `print_trapframe`：`cause 0x0f` 与 `cause 0x14`、`PASS (25/25)` |
+| `05_test2_fallback.png` | Test 2（续） | 未知中断的完整 Trap frame（`cause 0x0f`） |
 | `06_test3_timer.png` | Test 3 | 多次 `100 ticks`、`PASS (40/40, ticks=200)` |
 | `07_make_grade.png` | `make grade` | 三个用例 PASS，`Total Score: 100/100` |
 
@@ -749,7 +748,7 @@ Total Score: 100/100
 复核结论：
 
 1. **分值完整**：35 + 25 + 40 = 100，三项均以满分通过，无部分得分；
-2. **可重复**：`make clean` 后连续两次执行 `make grade`，结果一致，说明不依赖残留的
+2. **可重复**：`make clean` 后重复执行 `make grade`，结果一致，说明不依赖残留的
    `obj/`、`bin/` 或上一次注入状态；
 3. **无副作用**：`make grade` 在 `/tmp/lab3_grade` 的副本中注入测试，仓库内的
    `kern/init/init.c`、`Makefile` 不会被改动；评分前后 `git status` 只包含报告/图片改动；
@@ -782,7 +781,7 @@ Total Score: 100/100
 1. **用户态与系统调用**：U 模式、`ecall` 的 syscall 分发、`sepc + 4`、用户/内核栈切换；
 2. **进程与线程**：PCB、`switch_to`、内核栈与进程上下文的区别；
 3. **调度与抢占**：时间片轮转、优先级、就绪队列——本实验只累计 tick 并关机，不做调度决策；
-4. **中断嵌套与并发保护**：本实验全程开中断、单 hart，没有嵌套中断、关中断临界区与自旋锁；
+4. **中断嵌套与并发保护**：本实验为单 hart，且没有实现嵌套中断、关中断临界区与自旋锁；
 5. **缺页异常与按需分页**：page fault 的识别、页表项补全、写时复制；
 6. **多核与核间中断**：多 hart 启动、PLIC/CLINT、IPI；
 7. **浮点/向量上下文**：`f`/`v` 寄存器的保存与惰性切换；
@@ -794,8 +793,8 @@ Total Score: 100/100
 
 1. **提示词按"四段式"写，把约束变成硬条件**：`[PROMPT]` 说明任务与文件，
    `[RELY]` 给真实接口/宏/结构体，`[GUARANTEE]` 列禁止事项，`[SPECIFICATION]`
-   逐分支写清顺序与判分子串。A/B 的实现一次通过，主要收益来自 RELY 里给的是
-   骨架中真实存在的符号，而不是对 API 的猜测。
+   逐分支写清顺序与判分子串。A/B 的最终版本通过；迭代中修掉的 `sp`/`a0`/`sbadaddr` 问题见
+   4.1.5/P1，主要收益来自 RELY 里给的是骨架中真实存在的符号，而不是对 API 的猜测。
 2. **先让 AI 解释链路，再让它改代码**：把"硬件写 CSR → `SAVE_ALL` → `trap()` →
    handler → `RESTORE_ALL` → `sret`"完整讲一遍，能提前暴露"`sp` 何时恢复""`a0` 谁赋值"
    这类跨文件约束；直接要代码容易得到"能编译但不能跑"的版本。
@@ -852,25 +851,31 @@ make qemu                                  # 连续 100 ticks 后关机
 make grade                                 # Total Score: 100/100
 
 # 4. 单独跑某个用例（需先注入）
+cd ..
 cp -r code /tmp/lab3_shot && cd /tmp/lab3_shot
-python3 tools/inject.py
+python3 tools/inject.py .
 make clean && make DEFS+=-DGRADE_LAB3_CONTEXT && timeout 8s make qemu
 ```
 
 ### 7.4 提交记录
 
-按分工文档的 C1–C8 顺序提交到 `lab3` 分支，提交信息如下：
+实际提交记录（`git log --oneline`，从早到晚）：
 
 ```text
-feat(lab3): 回填 Lab2 page_init（pmm.c）
-feat(lab3): 实现 RESTORE_ALL 与 __alltraps（trapentry.S）
-feat(lab3): 回填 Lab2 Best-Fit 分配器（best_fit_pmm.c）
-feat(lab3): 实现中断与异常处理（trap.c）
-docs(lab3): 功能模块一与 page_init 草稿
-docs(lab3): 功能模块二与 Best-Fit 草稿
-docs(lab3): 环境、验证与总结草稿
-docs(lab3): 合并最终报告、提示词与截图
+57cfe34 chore(lab3): 初始化 Lab 3 独立分支（lab3 框架 + 空 report）
+bac3ad4 feat(lab3): 回填 Lab2 page_init（pmm.c）
+fd1d2c1 feat(lab3): 实现 RESTORE_ALL 与 __alltraps（trapentry.S）
+5a62c3b feat(lab3): 回填 Lab2 Best-Fit 分配器（best_fit_pmm.c）
+32c79f3 feat(lab3): 实现中断与异常处理（trap.c）
+c5e7a70 docs(lab3): 功能模块二与 Best-Fit 草稿
+b052a0c docs(lab3): 功能模块一与 page_init 草稿
+652ecc2 Add files via upload   # 上传 report.md / prompt.md / images，并给 pmm.c 注释补学号
+5a7817f Add files via upload   # 空提交（内容与上一提交相同）
 ```
+
+C7/C8 的内容由 GitHub 网页上传，提交信息为“Add files via upload”；功能上对应“环境/验证/总结草稿”和“合并最终报告、提示词与截图”。
+
+本次收尾提交为：`docs(lab3): 修正报告数据、截图说明并清理草稿`。
 
 提交前统一执行 `git pull --rebase origin lab3`，只 `git add` 自己负责的文件，
 避免把 `bin/`、`obj/` 带入仓库（`lab3` 是 orphan 分支，没有 `.gitignore`）。
