@@ -218,7 +218,20 @@ init_main(void *arg)
     return 0;
 }
 
-//LAB4 function2 YOUR CODE
-
+//LAB4 function2 2412386
+// alloc_proc - allocate and initialize a process control block
+static struct proc_struct *
+alloc_proc(void)
+{
+    struct proc_struct *proc = kmalloc(sizeof(struct proc_struct));
+    if (proc != NULL)
+    {
+        memset(proc, 0, sizeof(struct proc_struct));
+        proc->state = PROC_UNINIT;
+        proc->pid = -1;
+        proc->pgdir = boot_pgdir_pa;
+    }
+    return proc;
+}
 
 //LAB4 function3 YOUR CODE
