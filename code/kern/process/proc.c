@@ -318,5 +318,29 @@ bad_fork_cleanup_proc:
     goto fork_out;
 }
 
+// kernel_thread - build a trapframe template for a new kernel thread
+// NOTE: kernel_thread_entry does "move a0, s1; jalr s0", so the function
+// pointer must be in s0 and the argument in s1
+int
+kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
+{
+    struct trapframe tf;
+
+    memset(&tf, 0, sizeof(struct trapframe));
+
+    tf.gpr.s0 = (uintptr_t)fn;
+    tf.gpr.s1 = (uintptr_t)arg;
+    tf.gpr.a0 = 0;
+
+    tf.epc = (uintptr_t)kernel_thread_entry;
+
+    tf.status = read_csr(sstatus);
+    tf.status &= ~SSTATUS_SIE;
+    tf.status |= SSTATUS_SPIE;
+    tf.status |= SSTATUS_SPP;
+
+    return do_fork(clone_flags, 0, &tf);
+}
+
 
 //LAB4 function3 YOUR CODE
