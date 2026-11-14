@@ -379,4 +379,35 @@ proc_init(void)
 }
 
 
-//LAB4 function3 YOUR CODE
+//LAB4 function3 2412386
+// cpu_idle - the body of idleproc; the only scheduling point in this lab
+void cpu_idle(void)
+{
+    while (1)
+    {
+        if (current->need_resched)
+        {
+            schedule();
+        }
+    }
+}
+
+// proc_run - switch current to proc: update current, switch page table,
+// then let switch_to save/restore the callee-saved registers
+void proc_run(struct proc_struct *proc)
+{
+    bool intr_flag;
+    local_intr_save(intr_flag);
+
+    struct proc_struct *from = current;
+    if (from != proc)
+    {
+        current = proc;
+        // Sv39: MODE in bit 63..60, PPN in bit 43..0 (same as enable_paging())
+        write_csr(satp, 0x8000000000000000 | (proc->pgdir >> RISCV_PGSHIFT));
+        flush_tlb();
+        switch_to(&from->context, &proc->context);
+    }
+
+    local_intr_restore(intr_flag);
+}
