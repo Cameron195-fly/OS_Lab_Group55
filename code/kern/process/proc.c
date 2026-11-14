@@ -342,5 +342,41 @@ kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
     return do_fork(clone_flags, 0, &tf);
 }
 
+// proc_init - initialize the process table and create idleproc / initproc
+void
+proc_init(void)
+{
+    int i, pid;
+
+    list_init(&proc_list);
+    for (i = 0; i < HASH_LIST_SIZE; i++)
+    {
+        list_init(&hash_list[i]);
+    }
+
+    if ((idleproc = alloc_proc()) == NULL)
+    {
+        panic("cannot alloc idleproc.\n");
+    }
+
+    idleproc->pid = 0;
+    idleproc->state = PROC_RUNNABLE;
+    idleproc->kstack = (uintptr_t)bootstack;
+    idleproc->need_resched = 1;
+    current = idleproc;
+    set_proc_name(idleproc, "idle");
+    nr_process++;
+
+    // NOTE: idleproc is not linked into proc_list / hash_list on purpose;
+    // it is only the scheduler's fallback pointer.
+    pid = kernel_thread(init_main, "Hello world!!", 0);
+    if (pid <= 0)
+    {
+        panic("create init_main failed.\n");
+    }
+    initproc = find_proc(pid);
+    set_proc_name(initproc, "init");
+}
+
 
 //LAB4 function3 YOUR CODE
