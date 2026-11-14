@@ -88,6 +88,57 @@ size_t nr_free_pages(void)
 }
 
 //lab2 请补充你在lab2中的代码
+//lab2 2413541-赖鸿毅: build the physical page descriptor array and free list
+static void page_init(void) {
+    extern char end[];
+
+    uint64_t mem_base = get_memory_base();
+    uint64_t mem_size = get_memory_size();
+    if (mem_base == 0 || mem_size == 0) {
+        panic("page_init: invalid physical memory info from DTB");
+    }
+
+    uint64_t mem_end = mem_base + mem_size;
+    uint64_t manageable_end = (uint64_t)KERNTOP - PHYSICAL_MEMORY_OFFSET;
+    if (mem_end > manageable_end) {
+        mem_end = manageable_end;
+    }
+    if (mem_end <= mem_base) {
+        panic("page_init: empty manageable physical memory range");
+    }
+
+    va_pa_offset = PHYSICAL_MEMORY_OFFSET;
+    npage = PPN(mem_end);
+    if (npage <= nbase) {
+        panic("page_init: no manageable physical page");
+    }
+
+    pages = (struct Page *)ROUNDUP((uintptr_t)end, PGSIZE);
+    uintptr_t pages_end = (uintptr_t)pages +
+                          (npage - nbase) * sizeof(struct Page);
+    uintptr_t free_start_pa = ROUNDUP(PADDR(pages_end), PGSIZE);
+    uintptr_t free_end_pa = ROUNDDOWN((uintptr_t)mem_end, PGSIZE);
+
+    struct Page *p = pages;
+    for (size_t i = 0; i < npage - nbase; i++, p++) {
+        p->flags = 0;
+        p->property = 0;
+        set_page_ref(p, 0);
+        SetPageReserved(p);
+    }
+
+    cprintf("physical memory map:\n");
+    cprintf("  memory: [0x%016lx, 0x%016lx], npage = %lu\n",
+            (unsigned long)mem_base, (unsigned long)(mem_end - 1),
+            (unsigned long)npage);
+
+    if (free_start_pa < free_end_pa) {
+        init_memmap(pa2page(free_start_pa),
+                    (free_end_pa - free_start_pa) / PGSIZE);
+    } else {
+        cprintf("page_init: no free page after the page descriptor array\n");
+    }
+}
 
 static void enable_paging(void)
 {
@@ -220,13 +271,53 @@ struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store)
     return NULL;
 }
 
-//LAB4 function1 YOUR CODE
+//LAB4 function1 2413541-赖鸿毅
 
+// Remove an existing leaf PTE and drop the reference of its physical page.
+static void
+page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep) {
+    if (*ptep & PTE_V) {
+        struct Page *page = pte2page(*ptep);
+        if (page_ref_dec(page) == 0) {
+            free_page(page);
+        }
+        *ptep = 0;
+        tlb_invalidate(pgdir, la);
+    }
+}
 
+int
+page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
+    pte_t *ptep = get_pte(pgdir, la, 1);
+    if (ptep == NULL) {
+        return -E_NO_MEM;
+    }
 
+    page_ref_inc(page);
+    if (*ptep & PTE_V) {
+        struct Page *old_page = pte2page(*ptep);
+        if (old_page == page) {
+            // The same page is already mapped here: only update permissions.
+            page_ref_dec(page);
+        } else {
+            // Drop the old mapping before installing the new one.
+            page_remove_pte(pgdir, la, ptep);
+        }
+    }
 
+    *ptep = pte_create(page2ppn(page), perm | PTE_V);
+    tlb_invalidate(pgdir, la);
+    return 0;
+}
 
-
+void
+page_remove(pde_t *pgdir, uintptr_t la) {
+    pte_t *ptep = get_pte(pgdir, la, 0);
+    if (ptep == NULL) {
+        return;
+    }
+    page_remove_pte(pgdir, la, ptep);
+}
 
 // invalidate a TLB entry, but only if the page tables being
 // edited are the ones currently in use by the processor.
