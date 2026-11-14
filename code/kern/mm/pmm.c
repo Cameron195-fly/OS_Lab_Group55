@@ -271,13 +271,44 @@ struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store)
     return NULL;
 }
 
-//LAB4 function1 YOUR CODE
+//LAB4 function1 2413541-赖鸿毅
 
+// Remove an existing leaf PTE and drop the reference of its physical page.
+static void
+page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep) {
+    if (*ptep & PTE_V) {
+        struct Page *page = pte2page(*ptep);
+        if (page_ref_dec(page) == 0) {
+            free_page(page);
+        }
+        *ptep = 0;
+        tlb_invalidate(pgdir, la);
+    }
+}
 
+int
+page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
+    pte_t *ptep = get_pte(pgdir, la, 1);
+    if (ptep == NULL) {
+        return -E_NO_MEM;
+    }
 
+    page_ref_inc(page);
+    if (*ptep & PTE_V) {
+        struct Page *old_page = pte2page(*ptep);
+        if (old_page == page) {
+            // The same page is already mapped here: only update permissions.
+            page_ref_dec(page);
+        } else {
+            // Drop the old mapping before installing the new one.
+            page_remove_pte(pgdir, la, ptep);
+        }
+    }
 
-
-
+    *ptep = pte_create(page2ppn(page), perm | PTE_V);
+    tlb_invalidate(pgdir, la);
+    return 0;
+}
 
 // invalidate a TLB entry, but only if the page tables being
 // edited are the ones currently in use by the processor.
