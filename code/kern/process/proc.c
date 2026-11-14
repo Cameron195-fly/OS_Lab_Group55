@@ -234,4 +234,35 @@ alloc_proc(void)
     return proc;
 }
 
+// copy_mm - duplicate or share the mm_struct of the current process
+// NOTE: this lab only creates kernel threads, so current->mm is always NULL
+static int
+copy_mm(uint32_t clone_flags, struct proc_struct *proc)
+{
+    if (clone_flags & CLONE_VM)
+    {
+        proc->mm = current->mm;
+    }
+    else
+    {
+        proc->mm = NULL;
+    }
+    return 0;
+}
+
+// copy_thread - place the trapframe on the new kernel stack and prepare
+// the context so that the first switch_to() lands on forkret
+static void
+copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf)
+{
+    proc->tf = (struct trapframe *)(proc->kstack + KSTACKSIZE) - 1;
+    *(proc->tf) = *tf;
+
+    proc->tf->gpr.a0 = 0;
+    proc->tf->gpr.sp = (esp == 0) ? (uintptr_t)proc->tf : esp;
+
+    proc->context.ra = (uintptr_t)forkret;
+    proc->context.sp = (uintptr_t)proc->tf;
+}
+
 //LAB4 function3 YOUR CODE
