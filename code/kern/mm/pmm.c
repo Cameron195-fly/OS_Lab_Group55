@@ -310,6 +310,15 @@ page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm) {
     return 0;
 }
 
+void
+page_remove(pde_t *pgdir, uintptr_t la) {
+    pte_t *ptep = get_pte(pgdir, la, 0);
+    if (ptep == NULL) {
+        return;
+    }
+    page_remove_pte(pgdir, la, ptep);
+}
+
 // invalidate a TLB entry, but only if the page tables being
 // edited are the ones currently in use by the processor.
 void tlb_invalidate(pde_t *pgdir, uintptr_t la)
