@@ -36,11 +36,11 @@
 
 ### 2.1 AI 编程工具
 
-| 成员 | AI 编程工具 | 底层模型 | 备注 |
-|------|------------|---------|------|
-| 2413541-赖鸿毅（A） | DeepSeek Harness | deepseek-flash | 终端/编辑器协作，人工检查并提交 |
-| 2412386-唐港（B） | 未单独记录 | 未单独记录 | B 的报告未列出具体工具版本 |
-| 2412440-王朝阳（C） | 未单独记录 | 未单独记录 | C 的报告未列出具体工具版本 |
+| 成员 | AI 工具 | 底层模型 |
+|------|---------|---------|
+| 2413541-赖鸿毅（A） | DeepSeek Harness | DeepSeek-V4.1-Flash |
+| 2412386-唐港（B） | Claude Code | DeepSeek-v4-pro |
+| 2412440-王朝阳（C） | DeepSeek | DeepSeek-v4-pro |
 
 ### 2.2 构建与运行环境
 
@@ -617,7 +617,7 @@ cpu_idle → schedule → proc_run → switch_to
 [SPECIFICATION] Pre-Condition / Post-Condition / Case / Requirements
 ```
 
-模块二按“一个可独立验证的功能”拆成五轮提示词（`alloc_proc`；`copy_mm`+`copy_thread`；`do_fork`；`kernel_thread`；`proc_init`），模块三接口一轮（`cpu_idle`+`proc_run`）。完整提示词见 `report/B-prompt.md`。
+模块二按“一个可独立验证的功能”拆成五轮提示词（`alloc_proc`；`copy_mm`+`copy_thread`；`do_fork`；`kernel_thread`；`proc_init`），模块三接口一轮（`cpu_idle`+`proc_run`）。完整提示词见 `report/prompt.md` 的 B 部分。
 
 #### 实现迭代过程
 
@@ -1408,7 +1408,8 @@ AI 生成代码时，最有效的做法不是让它“照着 ucore 写一遍”�
 
 ## 附录：提示词与提交记录
 
-- A 的提示词：`report/prompt.md`；代码 commit：`63e7743`、`323a587`、`6e32210`、`b293bf7`；报告 commit：`c3f069d`。
-- B 的提示词：`report/B-prompt.md`；代码 commit：`514cca4`、`1d00468`、`5e74d45`、`1e2b541`、`b458cb5`、`f5f7204`；同步提交：`a5e0a2c`。
-- C 的模块三 prompt 与迭代记录见 `report/C-report.md` 的 4.5 节。
+- 全体提示词汇总：`report/prompt.md`（包含 A、B、C 三人的 prompt 与迭代记录）。
+- A 的代码 commit：`63e7743`、`323a587`、`6e32210`、`b293bf7`；报告 commit：`c3f069d`。
+- B 的代码 commit：`514cca4`、`1d00468`、`5e74d45`、`1e2b541`、`b458cb5`、`f5f7204`；同步提交：`a5e0a2c`。
+- C 的代码与报告见 `lab4` 分支提交历史。
 - 测试截图见本文第五节 `report/images/lab4_make_grade.png`、`lab4_make_qemu.png`。
