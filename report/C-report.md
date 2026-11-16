@@ -6,10 +6,10 @@
 |------|------|
 | **实验名称** | Lab 4：进程管理 |
 | **小组成员** | 2413541-赖鸿毅（A）、2412386-唐港（B）、2412440-王朝阳（C） |
-| **完成日期** | 2026-11-15 |
+| **完成日期** | 2026-11-16 |
 | **代码分支** | `lab4-c`（基于小组 `lab4` 分支，含 A 的 PMM 与 B 的进程创建代码） |
 | **本模块改动文件** | `kern/trap/trapentry.S`、`kern/trap/trap.c`、`kern/process/switch.S`、`kern/schedule/sched.c` |
-| **报告文件** | `report/C-report.md`、`report/sections/03-sched.md`、`report/sections/04-challenge-intr.md`、`report/sections/06-gaps.md` |
+| **报告文件** | `report/C-report.md`（本文件的模块三、Challenge、未覆盖知识点和测试章节） |
 | **测试截图** | `report/images/lab4_make_qemu.png`、`report/images/lab4_make_grade.png` |
 
 ### 小组分工
@@ -475,7 +475,7 @@ static inline void __intr_restore(bool flag) {
 9. **可靠性与安全**：`panic()` 直接死循环，没有崩溃转储、日志、权限模型、KASLR、SMEP/SMAP。
 10. **测试局限**：30/30 只验证最小闭环，不验证公平性、顺序、饥饿、长时间运行与多核正确性。
 
-详细讨论见 `report/sections/06-gaps.md`。
+详细讨论见本报告第六节。
 
 ---
 
@@ -523,12 +523,7 @@ static inline void __intr_restore(bool flag) {
 | `code/kern/process/switch.S` | `switch_to` 上下文切换 |
 | `code/kern/schedule/sched.c` | `schedule` 轮转调度 |
 | `report/C-report.md` | 本报告（C 独立完整版） |
-| `report/sections/03-sched.md` | 模块三详细分析 |
-| `report/sections/04-challenge-intr.md` | `local_intr` Challenge 详细分析 |
-| `report/sections/06-gaps.md` | 未覆盖知识点详细清单 |
 | `report/images/lab4_make_qemu.png` | `make qemu` 运行截图 |
 | `report/images/lab4_make_grade.png` | `make grade` 30/30 截图 |
 
-> 本次为本地目录交付，未执行 git 提交。建议的提交划分：
-> `lab4-c: add lab3 trap baseline`、`lab4-c: implement schedule and switch_to`、
-> `lab4-c: add module3 report and challenge`、`lab4-c: add test screenshots`。
+> 本报告及 C 的代码已提交到 `lab4` 分支；最终总报告见 `report/report.md`。

@@ -5,16 +5,16 @@
 | 项目 | 内容 |
 |------|------|
 | **实验名称** | Lab 4：进程管理 |
-| **小组成员** | 2413541-赖鸿毅（A）、[待填：B 学号-姓名]、[待填：C 学号-姓名] |
-| **完成日期** | 2026-11-10 |
+| **小组成员** | 2413541-赖鸿毅（A）、2412386-唐港（B）、2412440-王朝阳（C） |
+| **完成日期** | 2026-11-16 |
 
 ### 小组分工
 
 | 成员 | 负责的练习/模块 |
 |------|----------------|
 | 2413541-赖鸿毅（A） | lab2 PMM 基线（best-fit、`page_init`）、功能模块一（`page_insert`/`page_remove`）、整体逻辑线、`get_pte` Challenge |
-| [待填：B 学号-姓名] | 功能模块二（`alloc_proc`、`proc_init`、`kernel_thread`、`do_fork`、`copy_thread`、`copy_mm`）、`cpu_idle`/`proc_run`、分页模式 Challenge、知识点对照 |
-| [待填：C 学号-姓名] | lab3 trap 基线、功能模块三（`schedule`/`switch_to`）、模块三报告、`local_intr_save` Challenge、未覆盖知识点、测试截图 |
+| 2412386-唐港（B） | 功能模块二（`alloc_proc`、`proc_init`、`kernel_thread`、`do_fork`、`copy_thread`、`copy_mm`）、`cpu_idle`/`proc_run`、分页模式 Challenge、知识点对照 |
+| 2412440-王朝阳（C） | lab3 trap 基线、功能模块三（`schedule`/`switch_to`）、模块三报告、`local_intr_save` Challenge、未覆盖知识点、测试截图 |
 
 实验报告的协作方式：每人写自己的 `A-report.md`、`B-report.md`、`C-report.md`，最后由 B 机械拼接为 `report/report.md`；不安排交叉复核，只保留“编译通过、测试通过”两个客观门禁。
 
@@ -36,8 +36,8 @@
 | 成员 | AI 编程工具 | 底层模型 | 备注 |
 |------|------------|---------|------|
 | 2413541-赖鸿毅（A） | DeepSeek Harness | deepseek-flash | 使用终端/编辑器协作，人工检查并提交 |
-| [待填：B 学号-姓名] | [待填] | [待填] | [可选] |
-| [待填：C 学号-姓名] | [待填] | [待填] | [可选] |
+| 2412386-唐港（B） | 见 B-report | 见 B-report | 由 B 自述 |
+| 2412440-王朝阳（C） | 见 C-report | 见 C-report | 由 C 自述 |
 
 **构建与运行环境：**
 
@@ -503,18 +503,28 @@ make obj/kern/mm/default_pmm.o
 make obj/kern/mm/pmm.o
 ```
 
-预期两个 `.o` 都能生成。
+最终 A/B/C 三部分合并后，`make grade` 结果为：
 
-集成后需要确认：
+```text
+-check PMM:                  OK
+-check Process Create:       OK
+-check Schedule:             OK
+Total Score: 30/30
+```
+
+`make qemu` 中与 A 相关的结果为：
 
 ```text
 check_alloc_page() succeeded!
 check_pgdir() succeeded!
 check_boot_pgdir() succeeded!
-[Test PMM] PASS
 ```
 
-> A 完成本模块时 B/C 的 `proc.c`、`trap.c`、`sched.c`、`switch.S` 还没有合并，因此完整的 `make qemu`/`make grade` 要等集成阶段执行；A 的最终 `[Test PMM] PASS` 截图在集成通过后补到 `report/images/`。
+![make grade 30/30](./images/lab4_make_grade.png)
+
+![make qemu 输出](./images/lab4_make_qemu.png)
+
+> `process exit!!` 的 panic 是 lab4 中 `init_main` 返回后调用简化版 `do_exit()` 的预期行为；三个评分项均已通过。
 
 ---
 

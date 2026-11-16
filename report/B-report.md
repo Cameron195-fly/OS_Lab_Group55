@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 |------|------|
 | **实验名称** | Lab 4：进程管理 |
-| **小组成员** | 2413541-赖鸿毅（A）、2412386-唐港（B）、[待填：C 学号-姓名] |
-| **完成日期** | 2026-11-14 |
+| **小组成员** | 2413541-赖鸿毅（A）、2412386-唐港（B）、2412440-王朝阳（C） |
+| **完成日期** | 2026-11-16 |
 | **代码分支** | `lab4-b` |
 | **代码提交** | `514cca4`、`1d00468`、`5e74d45`、`1e2b541`、`b458cb5`、`f5f7204` |
 | **同步提交** | `a5e0a2c`（merge: sync origin/lab4） |
@@ -17,7 +17,7 @@
 |------|----------------|
 | 2413541-赖鸿毅（A） | lab2 PMM 基线（best-fit、`page_init`）、功能模块一（`page_insert`/`page_remove`）、整体逻辑线、`get_pte` Challenge |
 | 2412386-唐港（B） | 功能模块二（`alloc_proc`、`copy_mm`、`copy_thread`、`do_fork`、`kernel_thread`、`proc_init`）、功能模块三中的 `cpu_idle`/`proc_run` 代码、分页模式 Challenge、知识点对照 |
-| [待填：C 学号-姓名] | lab3 trap 基线、功能模块三（`schedule`/`switch_to`）、模块三报告正文、`local_intr_save` Challenge、未覆盖知识点、测试截图 |
+| 2412440-王朝阳（C） | lab3 trap 基线、功能模块三（`schedule`/`switch_to`）、模块三报告正文、`local_intr_save` Challenge、未覆盖知识点、测试截图 |
 
 > 说明：按小组约定，模块三的报告正文由 C 统一撰写，包含 B 实现的 `cpu_idle`/`proc_run`。
 > 本文只记录这两个函数的接口实现事实，详细分析见 C 的模块三章节，避免重复。
@@ -600,17 +600,16 @@ offset = 0x000
 | `sizeof(struct trapframe) == 288` | 通过（编译期断言） |
 | `sizeof(struct context) == 112` | 通过（编译期断言） |
 | 两个 `//LAB4 function` 标记保留并替换学号 | 通过 |
-| 全量 `make -j4` | 所有 `.o` 编译成功；链接停在 `undefined reference to 'schedule'`（C 未完成） |
-| 合并 A 的 `pmm.c` 后编译 | 通过 |
+| 全量 `make -j4` | 合并 A/C 后通过 |
+| `make grade`（A/B/C 合并后） | 30/30 |
 
-### 6.2 集成后预期
+### 6.2 最终集成验证
 
 ```text
-[Test Process Create] PASS
-[Test Schedule] PASS
-this initproc, pid = 1, name = "init"
-To U: "Hello world!!".
-To U: "en.., Bye, Bye. :)"
+-check PMM:                  OK
+-check Process Create:       OK
+-check Schedule:             OK
+Total Score: 30/30
 ```
 
 `test_lab4_process_create()` 由 `inject.py` 注入在 `proc_init` 末尾，`test_lab4_schedule()` 注入在 `init_main` 开头。模块二的断言覆盖：
@@ -618,7 +617,7 @@ To U: "en.., Bye, Bye. :)"
 - `idleproc->pid == 0`、`state == PROC_RUNNABLE`、`kstack == bootstack`、`parent == NULL`、`mm == NULL`、`tf == NULL`、`runs == 0`、`flags == 0`、`context.ra == 0`；
 - `initproc->pid == 1`、`parent == idleproc`、`mm == NULL`、`context.ra != 0`、`context.sp != 0`。
 
-> 最终 `make grade` 的完整输出与截图由 A/C 在集成完成后补充。
+![make grade 30/30](./images/lab4_make_grade.png)
 
 ---
 

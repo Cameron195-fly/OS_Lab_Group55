@@ -326,7 +326,7 @@ AI 生成版本在清空 PTE 后顺手回收空页表页，导致 `check_pgdir()
 ## 备注
 
 - A 的 4 个代码 commit 分别是：`63e7743`、`323a587`、`6e32210`、`b293bf7`。
-- A 的最终 `make grade` 截图在 B/C 合并、`[Test PMM] PASS` 后补到 `report/images/`。
-- 本文件只记录 A 的提示词；B/C 的提示词可以继续往后追加。
+- A 的最终 `make grade` 截图为 `report/images/lab4_make_grade.png`，结果 `Total Score: 30/30`。
+- 本文件只记录 A 的提示词；B/C 的提示词见 `report/B-prompt.md` 和 `report/C-report.md`。
 
 ---
